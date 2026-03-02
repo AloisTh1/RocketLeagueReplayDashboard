@@ -180,6 +180,7 @@ jobs:
           overwrite_files: true
           files: |
             dist/release-dist.zip
+            dist/backend/rl-dashboard-api.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -277,5 +278,6 @@ jobs:
           overwrite_files: true
           files: |
             dist/release-dist.zip
+            dist/backend/rl-dashboard-api.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
