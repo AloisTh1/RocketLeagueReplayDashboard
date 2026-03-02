@@ -1,6 +1,6 @@
 [project]
 name = "rl-local-dashboard"
-version = "1.0.4"
+version = "1.0.5"
 description = "Local Rocket League replay dashboard using boxcars"
 readme = "README.md"
 requires-python = ">=3.11"
