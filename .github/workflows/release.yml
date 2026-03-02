@@ -129,6 +129,20 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build boxcars parser
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/nickbabcock/boxcars.git .boxcars-src
+          cargo build --release --manifest-path .boxcars-src/Cargo.toml --example json
+          $boxcarsExe = Join-Path $PWD ".boxcars-src\target\release\examples\json.exe"
+          if (!(Test-Path $boxcarsExe)) {
+            throw "boxcars build did not produce json.exe"
+          }
+          "BOXCARS_EXE=$boxcarsExe" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Build Windows release artifacts
         shell: pwsh
         run: .\scripts\release.ps1
@@ -142,19 +156,28 @@ jobs:
           if (!(Test-Path "dist\backend\rl-dashboard-api.exe")) {
             Write-Error "dist\backend\rl-dashboard-api.exe not found"
           }
+          if (!(Test-Path "dist\tools\boxcars.exe")) {
+            Write-Error "dist\tools\boxcars.exe not found"
+          }
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zip = [System.IO.Compression.ZipFile]::OpenRead("dist\release-dist.zip")
           $hasExe = $false
+          $hasBoxcars = $false
           foreach ($entry in $zip.Entries) {
             $normalized = ($entry.FullName -replace '\\','/')
             if ($normalized -match '(^|/)backend/rl-dashboard-api\.exe$') {
               $hasExe = $true
-              break
+            }
+            if ($normalized -match '(^|/)tools/boxcars\.exe$') {
+              $hasBoxcars = $true
             }
           }
           $zip.Dispose()
           if (-not $hasExe) {
             Write-Error "release-dist.zip missing backend/rl-dashboard-api.exe"
+          }
+          if (-not $hasBoxcars) {
+            Write-Error "release-dist.zip missing tools/boxcars.exe"
           }
           Get-ChildItem dist -Recurse | Select-Object FullName, Length
 
@@ -226,6 +249,20 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build boxcars parser
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/nickbabcock/boxcars.git .boxcars-src
+          cargo build --release --manifest-path .boxcars-src/Cargo.toml --example json
+          $boxcarsExe = Join-Path $PWD ".boxcars-src\target\release\examples\json.exe"
+          if (!(Test-Path $boxcarsExe)) {
+            throw "boxcars build did not produce json.exe"
+          }
+          "BOXCARS_EXE=$boxcarsExe" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Build Windows release artifacts
         shell: pwsh
         run: .\scripts\release.ps1
@@ -239,19 +276,28 @@ jobs:
           if (!(Test-Path "dist\backend\rl-dashboard-api.exe")) {
             Write-Error "dist\backend\rl-dashboard-api.exe not found"
           }
+          if (!(Test-Path "dist\tools\boxcars.exe")) {
+            Write-Error "dist\tools\boxcars.exe not found"
+          }
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zip = [System.IO.Compression.ZipFile]::OpenRead("dist\release-dist.zip")
           $hasExe = $false
+          $hasBoxcars = $false
           foreach ($entry in $zip.Entries) {
             $normalized = ($entry.FullName -replace '\\','/')
             if ($normalized -match '(^|/)backend/rl-dashboard-api\.exe$') {
               $hasExe = $true
-              break
+            }
+            if ($normalized -match '(^|/)tools/boxcars\.exe$') {
+              $hasBoxcars = $true
             }
           }
           $zip.Dispose()
           if (-not $hasExe) {
             Write-Error "release-dist.zip missing backend/rl-dashboard-api.exe"
+          }
+          if (-not $hasBoxcars) {
+            Write-Error "release-dist.zip missing tools/boxcars.exe"
           }
           Get-ChildItem dist -Recurse | Select-Object FullName, Length
 
