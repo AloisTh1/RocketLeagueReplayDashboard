@@ -14,6 +14,7 @@ $frontendBuildDir = Join-Path $root "frontend\dist"
 $backendExeRoot = Join-Path $dist "rl-dashboard-api.exe"
 $backendExePackaged = Join-Path $backendDist "rl-dashboard-api.exe"
 $zipPath = Join-Path $dist "release-dist.zip"
+$pyInstallerWork = Join-Path $root "build\pyinstaller"
 
 function Invoke-Strict {
   param(
@@ -83,7 +84,21 @@ Pop-Location
 Write-Host "Building backend exe..."
 Push-Location $root
 Invoke-Strict -Command "uv" -Args @("sync", "--extra", "build")
-Invoke-Strict -Command "uv" -Args @("run", "pyinstaller", "--noconfirm", "--clean", "--onefile", "--name", "rl-dashboard-api", "backend\main.py")
+New-Item -ItemType Directory -Force $pyInstallerWork | Out-Null
+Invoke-Strict -Command "uv" -Args @(
+  "run",
+  "pyinstaller",
+  "--noconfirm",
+  "--clean",
+  "--onefile",
+  "--name",
+  "rl-dashboard-api",
+  "--distpath",
+  $dist,
+  "--workpath",
+  $pyInstallerWork,
+  "backend\main.py"
+)
 Pop-Location
 
 if (!(Test-Path (Join-Path $frontendBuildDir "index.html"))) {
