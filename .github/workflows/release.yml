@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  semantic-release:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Fetch tags (force)
+        run: git fetch --force --tags
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Semantic Release Version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uvx --from python-semantic-release semantic-release version
+
+      - name: Semantic Release Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uvx --from python-semantic-release semantic-release publish
+
+      - name: Resolve release for current tag
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="$(git tag --points-at HEAD | tail -n 1 || true)"
+          if [[ -z "${TAG}" ]]; then
+            TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          fi
+          if [[ -z "${TAG}" ]]; then
+            echo "No tag could be resolved from current history."
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+  build-windows-assets:
+    needs: [semantic-release]
+    if: ${{ github.event_name == 'push' && needs.semantic-release.outputs.tag != '' }}
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ needs.semantic-release.outputs.tag }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build boxcars parser
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/nickbabcock/boxcars.git .boxcars-src
+          cargo build --release --manifest-path .boxcars-src/Cargo.toml --example json
+          $boxcarsExe = Join-Path $PWD ".boxcars-src\target\release\examples\json.exe"
+          if (!(Test-Path $boxcarsExe)) {
+            throw "boxcars build did not produce json.exe"
+          }
+          "BOXCARS_EXE=$boxcarsExe" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build Windows release artifacts
+        shell: pwsh
+        run: .\scripts\release.ps1
+
+      - name: Validate package output
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist\release-dist.zip")) {
+            Write-Error "dist\release-dist.zip not found"
+          }
+          if (!(Test-Path "dist\backend\rl-dashboard-api.exe")) {
+            Write-Error "dist\backend\rl-dashboard-api.exe not found"
+          }
+          if (!(Test-Path "dist\tools\boxcars.exe")) {
+            Write-Error "dist\tools\boxcars.exe not found"
+          }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead("dist\release-dist.zip")
+          $hasExe = $false
+          $hasBoxcars = $false
+          foreach ($entry in $zip.Entries) {
+            $normalized = ($entry.FullName -replace '\\','/')
+            if ($normalized -match '(^|/)backend/rl-dashboard-api\.exe$') {
+              $hasExe = $true
+            }
+            if ($normalized -match '(^|/)tools/boxcars\.exe$') {
+              $hasBoxcars = $true
+            }
+          }
+          $zip.Dispose()
+          if (-not $hasExe) {
+            Write-Error "release-dist.zip missing backend/rl-dashboard-api.exe"
+          }
+          if (-not $hasBoxcars) {
+            Write-Error "release-dist.zip missing tools/boxcars.exe"
+          }
+          Get-ChildItem dist -Recurse | Select-Object FullName, Length
+
+      - name: Upload runtime package
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          files: |
+            dist/release-dist.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
