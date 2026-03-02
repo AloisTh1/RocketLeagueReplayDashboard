@@ -1,0 +1,41 @@
+AGENTS.md
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.python-version
+.venv/
+.uv-cache/
+.pytest_cache/
+.mypy_cache/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build / release artifacts
+dist/
+build/
+*.spec
+*.exe
+
+# Local parser/cache stores
+.boxcars-src/
+tools/parsed_replays/
+tools/raw_replays/
+
+# Local temp/debug files
+*.log
+.tmp-*.json

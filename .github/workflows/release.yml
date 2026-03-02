@@ -1,0 +1,281 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to rebuild/upload assets for (optional)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  semantic-release:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      has_release: ${{ steps.resolve.outputs.has_release }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      release_id: ${{ steps.resolve.outputs.release_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Fetch tags (force)
+        run: git fetch --force --tags
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Semantic Release Version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uvx --from python-semantic-release semantic-release version
+
+      - name: Semantic Release Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uvx --from python-semantic-release semantic-release publish
+
+      - name: Resolve release for current tag
+        id: resolve
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TAG="$(git tag --points-at HEAD | tail -n 1 || true)"
+          if [[ -z "${TAG}" ]]; then
+            echo "has_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          TAG="$TAG" python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GITHUB_TOKEN"]
+          tag = os.environ["TAG"]
+          out = os.environ["GITHUB_OUTPUT"]
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "github-actions",
+          }
+          url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
+          release_id = ""
+
+          for _ in range(18):
+              try:
+                  req = urllib.request.Request(url, headers=headers)
+                  with urllib.request.urlopen(req, timeout=20) as resp:
+                      payload = json.loads(resp.read().decode("utf-8"))
+                  release_id = str(payload.get("id") or "").strip()
+                  if release_id:
+                      break
+              except urllib.error.HTTPError:
+                  pass
+              except Exception:
+                  pass
+              time.sleep(10)
+
+          with open(out, "a", encoding="utf-8") as fh:
+              if release_id:
+                  fh.write("has_release=true\n")
+                  fh.write(f"release_id={release_id}\n")
+              else:
+                  fh.write("has_release=false\n")
+          PY
+
+  build-windows-assets:
+    needs: [semantic-release]
+    if: ${{ github.event_name == 'push' && needs.semantic-release.outputs.has_release == 'true' }}
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ needs.semantic-release.outputs.tag }}
+      RELEASE_ID: ${{ needs.semantic-release.outputs.release_id }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build Windows release artifacts
+        shell: pwsh
+        run: .\scripts\release.ps1
+
+      - name: Validate package output
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist\release-dist.zip")) {
+            Write-Error "dist\release-dist.zip not found"
+          }
+          if (!(Test-Path "dist\backend\rl-dashboard-api.exe")) {
+            Write-Error "dist\backend\rl-dashboard-api.exe not found"
+          }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead("dist\release-dist.zip")
+          $hasExe = $false
+          foreach ($entry in $zip.Entries) {
+            $normalized = ($entry.FullName -replace '\\','/')
+            if ($normalized -match '(^|/)backend/rl-dashboard-api\.exe$') {
+              $hasExe = $true
+              break
+            }
+          }
+          $zip.Dispose()
+          if (-not $hasExe) {
+            Write-Error "release-dist.zip missing backend/rl-dashboard-api.exe"
+          }
+          Get-ChildItem dist -Recurse | Select-Object FullName, Length
+
+      - name: Remove existing custom assets
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $releaseId = "$env:RELEASE_ID".Trim()
+          if (-not $releaseId) { throw "Missing RELEASE_ID" }
+          $api = "https://api.github.com/repos/${{ github.repository }}/releases/$releaseId/assets"
+          $assets = Invoke-RestMethod -Uri $api -Headers @{ Authorization = "Bearer $env:GITHUB_TOKEN"; "User-Agent" = "github-actions" }
+          foreach ($asset in $assets) {
+            $deleteApi = "https://api.github.com/repos/${{ github.repository }}/releases/assets/$($asset.id)"
+            Invoke-RestMethod -Method Delete -Uri $deleteApi -Headers @{ Authorization = "Bearer $env:GITHUB_TOKEN"; "User-Agent" = "github-actions" }
+          }
+
+      - name: Upload runtime package
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          files: |
+            dist/release-dist.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-windows-assets-manual:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: windows-latest
+    steps:
+      - name: Resolve target release
+        id: resolve
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ inputs.tag }}".Trim()
+          if (-not $tag) {
+            try {
+              $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/${{ github.repository }}/releases/latest" -Headers @{ Authorization = "Bearer $env:GITHUB_TOKEN"; "User-Agent" = "github-actions" }
+              $tag = "$($latest.tag_name)".Trim()
+            } catch {
+              throw "No tag provided and latest release could not be resolved."
+            }
+          }
+          if (-not $tag) { throw "No release tag resolved." }
+          $api = "https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag"
+          try {
+            $release = Invoke-RestMethod -Uri $api -Headers @{ Authorization = "Bearer $env:GITHUB_TOKEN"; "User-Agent" = "github-actions" }
+          } catch {
+            throw "Release not found for tag: $tag"
+          }
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "release_id=$($release.id)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.resolve.outputs.tag }}
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build Windows release artifacts
+        shell: pwsh
+        run: .\scripts\release.ps1
+
+      - name: Validate package output
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist\release-dist.zip")) {
+            Write-Error "dist\release-dist.zip not found"
+          }
+          if (!(Test-Path "dist\backend\rl-dashboard-api.exe")) {
+            Write-Error "dist\backend\rl-dashboard-api.exe not found"
+          }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead("dist\release-dist.zip")
+          $hasExe = $false
+          foreach ($entry in $zip.Entries) {
+            $normalized = ($entry.FullName -replace '\\','/')
+            if ($normalized -match '(^|/)backend/rl-dashboard-api\.exe$') {
+              $hasExe = $true
+              break
+            }
+          }
+          $zip.Dispose()
+          if (-not $hasExe) {
+            Write-Error "release-dist.zip missing backend/rl-dashboard-api.exe"
+          }
+          Get-ChildItem dist -Recurse | Select-Object FullName, Length
+
+      - name: Remove existing custom assets
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $releaseId = "${{ steps.resolve.outputs.release_id }}".Trim()
+          if (-not $releaseId) { throw "Missing release_id" }
+          $api = "https://api.github.com/repos/${{ github.repository }}/releases/$releaseId/assets"
+          $assets = Invoke-RestMethod -Uri $api -Headers @{ Authorization = "Bearer $env:GITHUB_TOKEN"; "User-Agent" = "github-actions" }
+          foreach ($asset in $assets) {
+            $deleteApi = "https://api.github.com/repos/${{ github.repository }}/releases/assets/$($asset.id)"
+            Invoke-RestMethod -Method Delete -Uri $deleteApi -Headers @{ Authorization = "Bearer $env:GITHUB_TOKEN"; "User-Agent" = "github-actions" }
+          }
+
+      - name: Upload runtime package
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.resolve.outputs.tag }}
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          files: |
+            dist/release-dist.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
