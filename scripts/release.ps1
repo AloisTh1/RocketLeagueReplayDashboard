@@ -3,11 +3,17 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
 $root = Resolve-Path "$PSScriptRoot\.."
 $dist = Join-Path $root "dist"
 $backendDist = Join-Path $dist "backend"
 $frontendDist = Join-Path $dist "frontend"
 $toolsDist = Join-Path $dist "tools"
+$frontendBuildDir = Join-Path $root "frontend\dist"
+$backendExeRoot = Join-Path $dist "rl-dashboard-api.exe"
+$backendExePackaged = Join-Path $backendDist "rl-dashboard-api.exe"
+$zipPath = Join-Path $dist "release-dist.zip"
 
 function Invoke-Strict {
   param(
@@ -32,38 +38,36 @@ function Invoke-StrictCmd {
   }
 }
 
-function Invoke-WithRetry {
+function Add-DirectoryToZip {
   param(
     [Parameter(Mandatory = $true)]
-    [scriptblock]$Action,
-    [int]$Attempts = 3,
-    [int]$DelaySeconds = 2
+    [System.IO.Compression.ZipArchive]$Zip,
+    [Parameter(Mandatory = $true)]
+    [string]$DirectoryPath,
+    [Parameter(Mandatory = $true)]
+    [string]$RootName
   )
-  $lastError = $null
-  for ($i = 1; $i -le $Attempts; $i++) {
-    try {
-      & $Action
-      return
-    } catch {
-      $lastError = $_
-      if ($i -lt $Attempts) {
-        Write-Host "Attempt $i/$Attempts failed. Retrying in $DelaySeconds sec..."
-        Start-Sleep -Seconds $DelaySeconds
-      }
-    }
+  $files = Get-ChildItem -Path $DirectoryPath -Recurse -File
+  foreach ($file in $files) {
+    $relative = $file.FullName.Substring($DirectoryPath.Length).TrimStart('\', '/')
+    $entryName = ($RootName + "/" + $relative) -replace '\\', '/'
+    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+      $Zip,
+      $file.FullName,
+      $entryName,
+      [System.IO.Compression.CompressionLevel]::Optimal
+    ) | Out-Null
   }
-  throw $lastError
 }
 
+Write-Host "Preparing dist folder..."
 New-Item -ItemType Directory -Force $dist | Out-Null
 @(
-  (Join-Path $dist "backend"),
-  (Join-Path $dist "frontend"),
-  (Join-Path $dist "tools"),
-  (Join-Path $dist "release-dist.zip"),
-  (Join-Path $dist "release-dist.tar.gz"),
-  (Join-Path $dist "run-backend.cmd"),
-  (Join-Path $dist "run-backend.sh")
+  $backendDist,
+  $frontendDist,
+  $toolsDist,
+  $zipPath,
+  (Join-Path $dist "run-backend.cmd")
 ) | ForEach-Object {
   if (Test-Path $_) {
     Remove-Item $_ -Recurse -Force
@@ -72,68 +76,30 @@ New-Item -ItemType Directory -Force $dist | Out-Null
 
 Write-Host "Building frontend..."
 Push-Location (Join-Path $root "frontend")
-$env:npm_config_cache = Join-Path $root ".npm-cache"
-$frontendDistIndex = Join-Path $root "frontend\dist\index.html"
-$canBuildFrontend = $true
-$npmCiWorked = $true
-try {
-  Invoke-WithRetry -Action { Invoke-StrictCmd -Args @("npm", "ci", "--no-audit", "--no-fund") } -Attempts 3 -DelaySeconds 3
-} catch {
-  $npmCiWorked = $false
-  Write-Warning "npm ci failed (often due to locked node_modules on Windows). Falling back to npm install."
-}
-if (-not $npmCiWorked) {
-  try {
-    Invoke-WithRetry -Action { Invoke-StrictCmd -Args @("npm", "install", "--no-audit", "--no-fund") } -Attempts 3 -DelaySeconds 3
-  } catch {
-    if (Test-Path $frontendDistIndex) {
-      $canBuildFrontend = $false
-      Write-Warning "npm install failed. Reusing existing frontend/dist."
-    } else {
-      throw
-    }
-  }
-}
-if ($canBuildFrontend) {
-  try {
-    Invoke-StrictCmd -Args @("npm", "run", "build:prod")
-  } catch {
-    if (Test-Path $frontendDistIndex) {
-      Write-Warning "Frontend build failed (often EPERM/esbuild spawn on local Windows). Reusing existing frontend/dist."
-    } else {
-      throw
-    }
-  }
-}
+Invoke-StrictCmd -Args @("npm", "ci", "--no-audit", "--no-fund")
+Invoke-StrictCmd -Args @("npm", "run", "build:prod")
 Pop-Location
 
 Write-Host "Building backend exe..."
 Push-Location $root
-$env:UV_CACHE_DIR = Join-Path $root ".uv-cache"
-$backendExe = Join-Path $root "dist\rl-dashboard-api.exe"
-$canBuildBackend = $true
-try {
-  Invoke-Strict -Command "uv" -Args @("sync", "--extra", "build")
-  Invoke-Strict -Command "uv" -Args @("run", "pyinstaller", "--noconfirm", "--clean", "--onefile", "--name", "rl-dashboard-api", "backend\main.py")
-} catch {
-  if (Test-Path $backendExe) {
-    $canBuildBackend = $false
-    Write-Warning "Backend build failed. Reusing existing dist\\rl-dashboard-api.exe."
-  } else {
-    throw
-  }
-}
+Invoke-Strict -Command "uv" -Args @("sync", "--extra", "build")
+Invoke-Strict -Command "uv" -Args @("run", "pyinstaller", "--noconfirm", "--clean", "--onefile", "--name", "rl-dashboard-api", "backend\main.py")
 Pop-Location
 
+if (!(Test-Path (Join-Path $frontendBuildDir "index.html"))) {
+  throw "Missing frontend build output: $frontendBuildDir\\index.html"
+}
+if (!(Test-Path $backendExeRoot)) {
+  throw "Missing backend executable: $backendExeRoot"
+}
+
+Write-Host "Assembling runtime package..."
 New-Item -ItemType Directory -Force $backendDist | Out-Null
 New-Item -ItemType Directory -Force $frontendDist | Out-Null
 New-Item -ItemType Directory -Force $toolsDist | Out-Null
 
-Copy-Item (Join-Path $root "dist\rl-dashboard-api.exe") (Join-Path $backendDist "rl-dashboard-api.exe") -Force
-Copy-Item (Join-Path $root "frontend\dist\*") $frontendDist -Recurse -Force
-if (!(Test-Path (Join-Path $backendDist "rl-dashboard-api.exe"))) {
-  throw "Missing backend executable in package folder: $backendDist\\rl-dashboard-api.exe"
-}
+Copy-Item $backendExeRoot $backendExePackaged -Force
+Copy-Item (Join-Path $frontendBuildDir "*") $frontendDist -Recurse -Force
 
 $boxcarsCandidates = @()
 if ($env:BOXCARS_EXE) { $boxcarsCandidates += $env:BOXCARS_EXE }
@@ -143,21 +109,16 @@ $boxcarsCandidates += @(
   (Join-Path $root "tools\boxcars.exe"),
   (Join-Path $root "tools\boxcars")
 )
-$boxcarsSrc = $null
-foreach ($candidate in $boxcarsCandidates) {
-  if (Test-Path $candidate) {
-    $boxcarsSrc = $candidate
-    break
-  }
-}
 $boxcarsBundlePath = $null
-if ($boxcarsSrc) {
-  if ([System.IO.Path]::GetExtension($boxcarsSrc) -ieq ".exe") {
+foreach ($candidate in $boxcarsCandidates) {
+  if (!(Test-Path $candidate)) { continue }
+  if ([System.IO.Path]::GetExtension($candidate) -ieq ".exe") {
     $boxcarsBundlePath = ".\tools\boxcars.exe"
   } else {
     $boxcarsBundlePath = ".\tools\boxcars"
   }
-  Copy-Item $boxcarsSrc (Join-Path $dist ($boxcarsBundlePath -replace "^\.\\" ,"")) -Force
+  Copy-Item $candidate (Join-Path $dist ($boxcarsBundlePath -replace "^\.\\" ,"")) -Force
+  break
 }
 
 if ($boxcarsBundlePath) {
@@ -173,62 +134,28 @@ set PORT=$Port
 "@ | Set-Content (Join-Path $dist "run-backend.cmd")
 }
 
-$archiveItems = @(
-  (Join-Path $dist "backend"),
-  (Join-Path $dist "frontend"),
-  (Join-Path $dist "run-backend.cmd")
-)
-if ($boxcarsBundlePath) {
-  $archiveItems += (Join-Path $dist "tools")
-}
-$archiveItems = $archiveItems | Where-Object { Test-Path $_ }
-$zipPath = Join-Path $dist "release-dist.zip"
-if (Test-Path $zipPath) {
-  Remove-Item $zipPath -Force
-}
-if ($archiveItems.Count -gt 0) {
-  Add-Type -AssemblyName System.IO.Compression
-  Add-Type -AssemblyName System.IO.Compression.FileSystem
-  $zip = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
-  try {
-    foreach ($item in $archiveItems) {
-      if (Test-Path $item -PathType Container) {
-        $rootName = [System.IO.Path]::GetFileName($item)
-        $files = Get-ChildItem -Path $item -Recurse -File
-        foreach ($file in $files) {
-          $relative = $file.FullName.Substring($item.Length).TrimStart('\','/')
-          $entryName = ($rootName + "/" + $relative) -replace '\\','/'
-          [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, $entryName, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
-        }
-      } else {
-        $entryName = [System.IO.Path]::GetFileName($item)
-        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $item, $entryName, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
-      }
-    }
-  } finally {
-    $zip.Dispose()
+Write-Host "Creating release-dist.zip..."
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+  Add-DirectoryToZip -Zip $zip -DirectoryPath $backendDist -RootName "backend"
+  Add-DirectoryToZip -Zip $zip -DirectoryPath $frontendDist -RootName "frontend"
+  [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+    $zip,
+    (Join-Path $dist "run-backend.cmd"),
+    "run-backend.cmd",
+    [System.IO.Compression.CompressionLevel]::Optimal
+  ) | Out-Null
+  if (Test-Path (Join-Path $dist "tools")) {
+    Add-DirectoryToZip -Zip $zip -DirectoryPath (Join-Path $dist "tools") -RootName "tools"
   }
+} finally {
+  $zip.Dispose()
 }
+
 if (!(Test-Path $zipPath)) {
   throw "Expected package missing: $zipPath"
-}
-$backendExeInPackage = Join-Path $backendDist "rl-dashboard-api.exe"
-$zipEntries = [System.IO.Compression.ZipFile]::OpenRead($zipPath).Entries | ForEach-Object { ($_.FullName -replace '\\','/') }
-if (-not ($zipEntries | Where-Object { $_ -match '(^|/)backend/rl-dashboard-api\.exe$' })) {
-  if (!(Test-Path $backendExeInPackage)) {
-    throw "release-dist.zip is missing backend/rl-dashboard-api.exe and backend exe source is unavailable"
-  }
-  $zipUpdate = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Update)
-  try {
-    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
-      $zipUpdate,
-      $backendExeInPackage,
-      "backend/rl-dashboard-api.exe",
-      [System.IO.Compression.CompressionLevel]::Optimal
-    ) | Out-Null
-  } finally {
-    $zipUpdate.Dispose()
-  }
 }
 $zipEntries = [System.IO.Compression.ZipFile]::OpenRead($zipPath).Entries | ForEach-Object { ($_.FullName -replace '\\','/') }
 if (-not ($zipEntries | Where-Object { $_ -match '(^|/)backend/rl-dashboard-api\.exe$' })) {
