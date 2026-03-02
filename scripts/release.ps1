@@ -212,6 +212,24 @@ if ($archiveItems.Count -gt 0) {
 if (!(Test-Path $zipPath)) {
   throw "Expected package missing: $zipPath"
 }
+$backendExeInPackage = Join-Path $backendDist "rl-dashboard-api.exe"
+$zipEntries = [System.IO.Compression.ZipFile]::OpenRead($zipPath).Entries | ForEach-Object { ($_.FullName -replace '\\','/') }
+if (-not ($zipEntries | Where-Object { $_ -match '(^|/)backend/rl-dashboard-api\.exe$' })) {
+  if (!(Test-Path $backendExeInPackage)) {
+    throw "release-dist.zip is missing backend/rl-dashboard-api.exe and backend exe source is unavailable"
+  }
+  $zipUpdate = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Update)
+  try {
+    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+      $zipUpdate,
+      $backendExeInPackage,
+      "backend/rl-dashboard-api.exe",
+      [System.IO.Compression.CompressionLevel]::Optimal
+    ) | Out-Null
+  } finally {
+    $zipUpdate.Dispose()
+  }
+}
 $zipEntries = [System.IO.Compression.ZipFile]::OpenRead($zipPath).Entries | ForEach-Object { ($_.FullName -replace '\\','/') }
 if (-not ($zipEntries | Where-Object { $_ -match '(^|/)backend/rl-dashboard-api\.exe$' })) {
   throw "release-dist.zip is missing backend/rl-dashboard-api.exe"
