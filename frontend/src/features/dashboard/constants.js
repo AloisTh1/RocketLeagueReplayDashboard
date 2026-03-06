@@ -1,5 +1,4 @@
 export const RECENT_COLUMNS_KEY = "rl_recent_columns_v1";
-export const RECENT_TABLE_FULL_COLS_KEY = "rl_recent_table_full_cols_v1";
 export const RECENT_TABLE_MAX_ROWS_KEY = "rl_recent_table_max_rows_v1";
 
 export const RECENT_COLUMN_DEFS = [
@@ -10,8 +9,8 @@ export const RECENT_COLUMN_DEFS = [
   { id: "result", label: "Result" },
   { id: "scoreline", label: "Score" },
   { id: "duration", label: "Duration" },
-  { id: "team_players", label: "Team players" },
-  { id: "opponents", label: "Opponents" },
+  { id: "team_players", label: "Blue players" },
+  { id: "opponents", label: "Orange players" },
   { id: "replay", label: "Replay" },
 ];
 
@@ -27,29 +26,28 @@ export const PLATFORM_LEGEND = [
 
 export const ANALYTICS_VIEW_DEFS = [
   { id: "overview", label: "Overview", tip: "Core performance graphs: trends, momentum, score deltas, and category summaries." },
-  { id: "other", label: "Other stats", tip: "Secondary stat views: impactful deltas and grouped match-type summaries." },
   { id: "boost", label: "Boost", tip: "Boost-focused charts: pickup volume and win/loss boost comparison." },
   { id: "distribution", label: "Distribution", tip: "Distribution views: mode mix, team-color win rates, duration and score differential." },
-  { id: "synergy", label: "Synergy", tip: "Teammate chemistry views: who you play with most and how outcomes shift." },
+  { id: "synergy", label: "Players Comparison", tip: "Player-relative comparisons: mates, enemies, and roster-based matchup views." },
+  { id: "misc", label: "Misc", tip: "Small derived counters and quirky replay-set highlights." },
   { id: "all", label: "All charts", tip: "Show every analytics block at once." },
 ];
 
 export const METRIC_DOCS = {
-  Replays: "Formula: matches = scopedRows.length. Extract: row={id:'abc123', date:'2026-03-02T11:30:00Z'}.",
-  "Win Rate": "Formula: wins / matches. Extract: wins=32, matches=57 -> 56.14%.",
-  "Player Avg Score": "Formula: mean(trackedPlayer.score). Extract: player={score:420, goals:2, assists:1}.",
-  "Player Avg Goals": "Formula: mean(trackedPlayer.goals). Extract: player={goals:2, shots:6}.",
-  "Player Avg Assists": "Formula: mean(trackedPlayer.assists). Extract: player={assists:1}.",
-  "Player Avg Saves": "Formula: mean(trackedPlayer.saves). Extract: player={saves:3}.",
+  Replays: "Formula: Team scope = scopedRows.length. Player scope = count(scopedRows where tracked Player ID is matched in the replay roster). Extract: scopedRows=57, trackedRows=41.",
+  "Win Rate": "Formula: trackedWins / trackedMatches using only rows where the tracked Player ID is matched. Extract: trackedWins=32, trackedMatches=57 -> 56.14%.",
   "Avg Goals": "Formula: mean(goals). Team scope -> mean(row.goals). Player scope -> mean(trackedPlayer.goals). Extract: row.goals=7, player.goals=2.",
   "Avg Shots": "Formula: mean(shots). Team scope -> row.shots. Player scope -> trackedPlayer.shots. Extract: row.shots=15, player.shots=6.",
   "Shot Accuracy": "Formula: mean(goals / shots). Team scope -> row.shot_accuracy. Player scope -> trackedPlayer.goals/trackedPlayer.shots. Extract: goals=3, shots=8 -> 37.50%.",
+  "Avg Centers": "Formula: mean(centers). Team scope -> row.centers. Player scope -> trackedPlayer.centers. Extract: row.centers=4, player.centers=2.",
   "Goals vs Opp": "Formula: mean(goals - opponentGoals). Team scope -> row.goals_diff_vs_opponents. Player scope -> trackedPlayer.goals - sum(opponent.goals). Extract: player.goals=2, oppGoals=4 -> -2.",
   "Avg Saves": "Formula: mean(saves). Team scope -> row.saves. Player scope -> trackedPlayer.saves. Extract: row.saves=5, player.saves=2.",
+  "Avg Clears": "Formula: mean(clears). Team scope -> row.clears. Player scope -> trackedPlayer.clears. Extract: row.clears=6, player.clears=3.",
   "Saves vs Opp": "Formula: mean(saves - opponentSaves). Team scope -> row.saves_diff_vs_opponents. Player scope -> trackedPlayer.saves - sum(opponent.saves). Extract: player.saves=3, oppSaves=2 -> +1.",
   "Save Share Team": "Formula: mean(saves/teamSaves). Team scope uses row.saves_share_team. Player scope uses trackedPlayer.saves / sum(team.saves). Extract: player.saves=2, team.saves=5 -> 40.00%.",
-  "Pressure Index": "Formula: score*0.01 + goals*2 + assists*1.5 + saves*1.4 + shots*0.7 + demos*0.8. Extract: score=500, goals=2, assists=1, saves=3, shots=7, demos=1.",
+  "Pressure Index": "Formula: score*0.01 + goals*2 + assists*1.5 + saves*1.4 + shots*0.7 + demos*0.8. Team scope uses team totals from each replay; player scope uses the tracked player's row only. Extract: score=500, goals=2, assists=1, saves=3, shots=7, demos=1 -> 18.90.",
   "Avg Assists": "Formula: mean(assists). Team scope -> row.assists. Player scope -> trackedPlayer.assists. Extract: row.assists=3, player.assists=1.",
+  "Avg Touches": "Formula: mean(touches). Team scope -> row.touches. Player scope -> trackedPlayer.touches. Extract: row.touches=42, player.touches=19.",
   "Score vs Mate": "Formula: mean(score - mateAvgScore). Team scope -> row.score_diff_vs_mate. Player scope -> trackedPlayer.score - avg(teammate.score). Extract: player.score=480, mateAvg=410 -> +70.",
   "Score Share Team": "Formula: mean(score/teamScore). Team scope uses row.score_share_team. Player scope uses trackedPlayer.score / sum(team.score). Extract: player.score=430, team.score=980 -> 43.88%.",
   "Assists Share Team": "Formula: mean(assists/teamAssists). Team scope uses row.assists_share_team. Player scope uses trackedPlayer.assists / sum(team.assists). Extract: player.assists=2, team.assists=5 -> 40.00%.",
@@ -57,15 +55,20 @@ export const METRIC_DOCS = {
   "Avg Small Boosts": "Formula: mean(small boosts). Team scope -> row.team_small_boosts (fallback row.small_boosts). Player scope -> trackedPlayer.small_boosts. Extract: team_small_boosts=95, player.small_boosts=39.",
   "Avg Total Boost": "Formula: mean(big + small). Team scope uses team totals; player scope uses tracked player totals. Extract: big=11, small=39 -> total=50.",
   "Big Boost Share": "Formula: Avg Big Boosts / Avg Total Boost. Extract: avgBig=28.2, avgTotal=129.5 -> 21.77%.",
+  "Slurping Indicator": "Formula: Avg Small Boosts / Avg Big Boosts. Higher means a more small-pad-heavy boost route. Extract: avgSmall=96, avgBig=24 -> 4.00.",
   "Avg Score": "Formula: mean(score). Team scope -> row.score. Player scope -> trackedPlayer.score. Extract: row.score=1010, player.score=430.",
-  "Score vs Opp": "Formula: mean(score - opponentScore). Team scope -> row.score_diff_vs_opponents. Player scope -> trackedPlayer.score - sum(opponent.score). Extract: player.score=430, oppScore=980 -> -550.",
-  "Score vs Others": "Formula: mean(score - othersScore). Team scope -> row.score_diff_vs_others. Player scope -> trackedPlayer.score - sum(otherPlayers.score). Extract: player.score=430, others=1430 -> -1000.",
+  "Score vs Opp": "Formula: mean(score - opponentScore). Team scope -> teamScore - opponentTeamScore. Player scope -> trackedPlayer.score - sum(opponent.score). Extract: player.score=430, oppScore=980 -> -550.",
+  "Score vs Others": "Formula: mean(score - othersScore). Team scope uses the same value as Score vs Opp because the 'others' are just the opponents when aggregating the whole team. Player scope -> trackedPlayer.score - sum(all other players' score, including teammate + opponents). Extract: player.score=430, others=1430 -> -1000.",
+  "Score vs Lobby Avg": "Formula: mean(trackedPlayer.score - avg(lobby.score)). Uses the full 4-player lobby average for the tracked player only. Extract: player.score=430, lobbyScores=[430,210,510,280] -> +72.50.",
   "Goal Share Team": "Formula: mean(goals/teamGoals). Team scope uses row.goals_share_team. Player scope uses trackedPlayer.goals / sum(team.goals). Extract: player.goals=2, team.goals=5 -> 40.00%.",
   "Assist vs Opp": "Formula: mean(assists - opponentAssists). Team scope -> row.assists_diff_vs_opponents. Player scope -> trackedPlayer.assists - sum(opponent.assists). Extract: player.assists=1, oppAssists=2 -> -1.",
+  "Touch Share Team": "Formula: mean(touches/teamTouches). Team scope uses row.touches_share_team. Player scope uses trackedPlayer.touches / sum(team.touches). Extract: player.touches=19, team.touches=42 -> 45.24%.",
+  "Touches vs Opp": "Formula: mean(touches - opponentTouches). Team scope -> row.touches_diff_vs_opponents. Player scope -> trackedPlayer.touches - sum(opponent.touches). Extract: player.touches=19, oppTouches=37 -> -18.",
   Score: "Formula: delta = mean(score in wins) - mean(score in losses). Team scope uses team score; player scope uses trackedPlayer.score. Extract: W=1040, L=860 -> +180.",
   Goals: "Formula: delta = mean(goals in wins) - mean(goals in losses). Extract: W=4.2, L=2.7 -> +1.5.",
   Shots: "Formula: delta = mean(shots in wins) - mean(shots in losses). Extract: W=11.3, L=8.9 -> +2.4.",
   Saves: "Formula: delta = mean(saves in wins) - mean(saves in losses). Extract: W=4.1, L=3.4 -> +0.7.",
+  Touches: "Formula: delta = mean(touches in wins) - mean(touches in losses). Extract: W=41.7, L=35.2 -> +6.5.",
   "Big Boosts": "Formula: delta = mean(big_boosts in wins) - mean(big_boosts in losses). Extract: W=31.0, L=27.2 -> +3.8.",
   "Small Boosts": "Formula: delta = mean(small_boosts in wins) - mean(small_boosts in losses). Extract: W=101.5, L=92.4 -> +9.1.",
   "Weighted Win Rate": "Formula: sum(bucket.wins) / sum(bucket.games). Extract: buckets=[{wins:8,games:12},{wins:5,games:10}].",
@@ -74,41 +77,50 @@ export const METRIC_DOCS = {
   "Best Bucket": "Formula: max bucket by winRate (tie-break: games). Extract: {bucket:'2026-02-28', winRate:0.80, games:5}.",
   "Worst Bucket": "Formula: min bucket by winRate (tie-break: games). Extract: {bucket:'2026-02-25', winRate:0.20, games:5}.",
   "Busiest Bucket": "Formula: bucket with max games. Extract: {bucket:'2026-02-27', games:9}.",
-  "Win Trend": "Formula: per bucket -> winRate = wins/games. Extract: bucket='2026-03-01', wins=6, games=10 -> 60.00%.",
-  "Score Momentum": "Formula: per bucket -> avgScore. Extract: bucket='2026-03-01', scoreTotal=9800, games=10 -> 980.",
-  "Score Diff Trend": "Formula: per bucket -> avg(score_diff_vs_others). Extract: bucket='2026-03-01', values=[+40,+15,-20,...].",
+  "Win Trend": "Formula: per bucket -> winRate = wins/games across tracked-player replay rows in that bucket. Extract: bucket='2026-03-01', wins=6, games=10 -> 60.00%.",
+  "Score Momentum": "Formula: per bucket -> avg(trackedPlayer.score). Extract: bucket='2026-03-01', playerScores=[420,610,505,...] -> 511.67.",
+  "Score vs Lobby Avg Trend": "Formula: per bucket -> avg(trackedPlayer.score - avg(lobby.score)). Extract: bucket='2026-03-01', values=[+72.5,+15.0,-21.25,...].",
   "Mode Distribution": "Formula: count rows by game_mode. Extract: rows game_mode=['2v2','2v2','3v3'].",
   "Mode Outcomes Split": "Formula: for each mode, count wins and losses. Extract: mode='2v2' -> wins=14, losses=9.",
   "Win Rate by Team Color": "Formula: wins(color) / games(color) for Blue and Orange. Extract: Blue {wins:11,games:18}.",
+  "Win Rate by Map": "Formula: for each map_name, compute wins(map) / games(map), alongside total games on that map. Extract: map='DFH_Stadium_P', wins=8, games=13 -> 61.54%.",
   "Match Duration Distribution": "Formula: bucket by duration_seconds into <=3m,3-4m,4-5m,5-6m,>=6m; compute games and win%. Extract: duration_seconds=302 -> '5-6m'.",
   "Goal Differential Distribution": "Formula: diff = team_score - opponent_score, clamped to <=-5 .. >=5. Extract: team_score=4, opponent_score=1 -> diff=3.",
-  "Mates Synergy": "Formula: per teammate (>=2 games): games and winRate. Extract: teammate='foo', games=7, wins=5 -> 71.43%.",
-  "Best Mates": "Formula: teammate table sorted by winRate/games with avg score and avg score-vs-mate. Extract: {name:'foo', games:7, wins:5, avgScore:910}.",
+  "Best Mates": "Formula: teammate table for the current Player ID, ordered by games desc then avg tracked-player score desc. `Score vs Mate` = mean(trackedPlayer.score - thisMate.score) for the named mate only. Extract: player=848, mate=871 -> -23.",
+  Enemies: "Formula: opponent table for the current Player ID, ordered by games desc then avg tracked-player score desc. `Score vs Opp` = mean(trackedPlayer.score - thisEnemy.score) for the named opponent only. Extract: player=848, enemy=1275 -> -427.",
+};
+
+export const CATEGORY_DOCS = {
+  Offense: "Finishing and shot-generation view. Focuses on goals, shots, conversion, and attacking output relative to opponents.",
+  Defense: "Prevention view. Focuses on saves, defensive output versus opponents, and how much of the team's saves are yours.",
+  Teamplay: "Cooperation view. Focuses on assists, score sharing, and performance relative to teammates.",
+  Impact: "Composite influence view. Lead metric is Pressure Index = score*0.01 + goals*2 + assists*1.5 + saves*1.4 + shots*0.7 + demos*0.8. Score-vs fields show how far above or below the comparison group you are.",
+  Context: "Situational view. Keeps only the remaining non-duplicated context metrics: goal share and assist comparison versus opponents.",
 };
 
 export const TAB_META = {
   day: {
-    label: "Day by Day",
+    label: "Day",
     short: "Day",
     tip: "Chronological daily buckets over your selected date range.",
   },
   hour: {
-    label: "Hourly Timeline",
-    short: "Hour TL",
-    tip: "Continuous timeline grouped by actual hour timestamps (date + hour).",
+    label: "Timeline",
+    short: "Timeline",
+    tip: "Continuous timeline with one point per replay, positioned by its real match timestamp.",
   },
   hour_of_day: {
-    label: "Hour of Day (Aggregate)",
-    short: "Hour OD",
+    label: "Hour",
+    short: "Hour",
     tip: "Aggregated by clock hour (00-23) across all selected days.",
   },
   week: {
-    label: "Week by Week",
+    label: "Week",
     short: "Week",
     tip: "Chronological weekly buckets over your selected date range.",
   },
   month: {
-    label: "Month by Month",
+    label: "Month",
     short: "Month",
     tip: "Chronological monthly buckets over your selected date range.",
   },

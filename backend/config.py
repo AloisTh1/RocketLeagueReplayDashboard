@@ -25,7 +25,30 @@ class ReplayDigest:
 
 
 def default_demos_dir() -> Path:
-    return Path.home() / "Documents" / "My Games" / "Rocket League" / "TAGame" / "Demos"
+    candidates: list[Path] = []
+    user_home = Path.home()
+    candidates.append(user_home / "Documents" / "My Games" / "Rocket League" / "TAGame" / "Demos")
+
+    for env_name in ("OneDriveCommercial", "OneDriveConsumer", "OneDrive"):
+        root = os.environ.get(env_name, "").strip()
+        if root:
+            candidates.append(Path(root) / "Documents" / "My Games" / "Rocket League" / "TAGame" / "Demos")
+
+    candidates.append(user_home / "OneDrive" / "Documents" / "My Games" / "Rocket League" / "TAGame" / "Demos")
+
+    seen: set[str] = set()
+    normalized: list[Path] = []
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(candidate)
+
+    for candidate in normalized:
+        if candidate.is_dir():
+            return candidate
+    return normalized[0]
 
 
 def candidate_boxcars_paths() -> list[Path]:

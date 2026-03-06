@@ -143,6 +143,17 @@ def id_key(value: Any) -> str:
     return "".join(ch for ch in text if ch.isalnum())
 
 
+def id_matches(candidate: str, target: str) -> bool:
+    if not candidate or not target:
+        return False
+    if candidate == target:
+        return True
+    # Avoid bogus matches like online_id "0" matching any long Steam/Epic id.
+    if len(candidate) < 6 or len(target) < 6:
+        return False
+    return target in candidate or candidate in target
+
+
 def to_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -163,6 +174,41 @@ def first_non_empty(data: dict[str, Any], keys: list[str]) -> Any:
     for key in keys:
         if key in data and data[key] not in (None, ""):
             return data[key]
+    return None
+
+
+def parse_boxcars_datetime(value: Any) -> datetime | None:
+    text = to_text(value)
+    if not text:
+        return None
+
+    candidates = [
+        text,
+        text.replace("Z", "+00:00"),
+        text.replace(" UTC", "+00:00"),
+        text.replace("T", " "),
+    ]
+    formats = (
+        "%Y-%m-%d %H-%M-%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H.%M.%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%m/%d/%Y %H:%M:%S",
+    )
+
+    for candidate in candidates:
+        try:
+            parsed = datetime.fromisoformat(candidate)
+            if not parsed.tzinfo:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            pass
+        for fmt in formats:
+            try:
+                return datetime.strptime(candidate, fmt).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
     return None
 
 
@@ -195,6 +241,26 @@ def normalize_player(player: dict[str, Any]) -> dict[str, Any] | None:
     assists = metric("assists", "Assists")
     saves = metric("saves", "Saves")
     shots = metric("shots", "Shots")
+    touches = metric(
+        "touches",
+        "Touches",
+        "ball_touches",
+        "BallTouches",
+        "HitBall",
+        "hit_ball",
+    )
+    clears = metric(
+        "clears",
+        "Clears",
+        "clear_balls",
+        "ClearBalls",
+    )
+    centers = metric(
+        "centers",
+        "Centers",
+        "center_balls",
+        "CenterBalls",
+    )
     demos = metric(
         "demolitions",
         "Demolitions",
@@ -244,6 +310,9 @@ def normalize_player(player: dict[str, Any]) -> dict[str, Any] | None:
         "assists": to_int(assists),
         "saves": to_int(saves),
         "shots": to_int(shots),
+        "touches": to_int(touches),
+        "clears": to_int(clears),
+        "centers": to_int(centers),
         "demos": to_int(demos),
         "big_boosts": to_int(big_boosts),
         "small_boosts": to_int(small_boosts),
@@ -356,24 +425,53 @@ def extract_metadata(raw: dict[str, Any]) -> dict[str, Any]:
     ranked = any(token in merged for token in ("ranked", "competitive"))
     tournament = "tournament" in merged
 
+    team_size = to_int(first_non_empty(properties, ["TeamSize", "team_size"]))
+    raw_game_type = to_text(first_non_empty(raw, ["game_type", "GameType"])).lower()
+    playlist_hint = " ".join(
+        filter(
+            None,
+            [
+                to_text(first_non_empty(properties, ["Playlist", "PlaylistName", "PlaylistId", "PlaylistID"])).lower(),
+                to_text(first_non_empty(properties, ["MatchType", "MatchTypeName", "GameMode", "GameModeName"])).lower(),
+                to_text(first_non_empty(raw, ["playlist", "playlist_name", "playlist_id"])).lower(),
+                raw_game_type,
+            ],
+        )
+    )
+    if not playlist_hint:
+        playlist_hint = merged
+
     game_mode = "Unknown"
-    mode_tokens = [
-        ("1v1", "1v1"),
-        ("duel", "1v1"),
-        ("2v2", "2v2"),
-        ("doubles", "2v2"),
-        ("3v3", "3v3"),
-        ("standard", "3v3"),
+    special_mode_tokens = [
         ("hoops", "Hoops"),
-        ("rumble", "Rumble"),
+        ("basketball", "Hoops"),
         ("dropshot", "Dropshot"),
+        ("rumble", "Rumble"),
+        ("snowday", "Snow Day"),
         ("snow day", "Snow Day"),
         ("heatseeker", "Heatseeker"),
     ]
-    for token, label in mode_tokens:
-        if token in merged:
+    for token, label in special_mode_tokens:
+        if token in playlist_hint:
             game_mode = label
             break
+    if game_mode == "Unknown":
+        if "duel" in playlist_hint or "1v1" in playlist_hint:
+            game_mode = "1v1"
+        elif "doubles" in playlist_hint or "2v2" in playlist_hint:
+            game_mode = "2v2"
+        elif "standard" in playlist_hint or "3v3" in playlist_hint:
+            game_mode = "3v3"
+        elif "4v4" in playlist_hint or "chaos" in playlist_hint:
+            game_mode = "4v4"
+        elif "soccar" in raw_game_type:
+            team_size_modes = {
+                1: "1v1",
+                2: "2v2",
+                3: "3v3",
+                4: "4v4",
+            }
+            game_mode = team_size_modes.get(team_size, "Unknown")
 
     if tournament:
         match_type = "Tournament"
@@ -383,17 +481,14 @@ def extract_metadata(raw: dict[str, Any]) -> dict[str, Any]:
         # Keep queue grouping concise and stable in UI.
         match_type = "Casual"
 
-    parsed_date = None
-    for key in ("date", "Date", "match_date", "start_time", "StartTime"):
-        value = raw.get(key)
-        if not value:
-            continue
-        if isinstance(value, str):
-            try:
-                parsed_date = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    raw_date_text = to_text(first_non_empty(properties, ["Date", "date"]))
+    parsed_date = parse_boxcars_datetime(raw_date_text)
+
+    if not parsed_date:
+        for key in ("date", "Date", "match_date", "start_time", "StartTime"):
+            parsed_date = parse_boxcars_datetime(raw.get(key))
+            if parsed_date:
                 break
-            except ValueError:
-                continue
 
     if not parsed_date and isinstance(properties, dict):
         epoch = properties.get("MatchStartEpoch")
@@ -403,21 +498,20 @@ def extract_metadata(raw: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError, OSError):
             parsed_date = None
 
-    if not parsed_date:
-        parsed_date = datetime.now(timezone.utc)
-    elif not parsed_date.tzinfo:
+    if parsed_date and not parsed_date.tzinfo:
         parsed_date = parsed_date.replace(tzinfo=timezone.utc)
 
-    team_size = to_int(first_non_empty(properties, ["TeamSize", "team_size"]))
     total_seconds_played = to_int(first_non_empty(properties, ["TotalSecondsPlayed", "total_seconds_played"]))
     winning_team = to_int(first_non_empty(properties, ["WinningTeam", "winning_team"]))
     primary_player_team = to_int(first_non_empty(properties, ["PrimaryPlayerTeam", "primary_player_team"]))
     unfair_team_size = to_bool(first_non_empty(properties, ["UnfairTeamSize", "unfair_team_size"]))
 
     return {
-        "date": parsed_date.isoformat(),
+        "date": parsed_date.isoformat() if parsed_date else "",
+        "date_source": "properties.Date" if raw_date_text and parsed_date else ("epoch" if parsed_date else ""),
         "match_type": match_type,
         "game_mode": game_mode,
+        "mode_source": "playlist_hint" if playlist_hint else "",
         "ranked": ranked,
         "tournament": tournament,
         "map_name": to_text(first_non_empty(properties, ["MapName", "map_name"])),
@@ -432,6 +526,7 @@ def extract_metadata(raw: dict[str, Any]) -> dict[str, Any]:
         "primary_player_team": primary_player_team,
         "unfair_team_size": unfair_team_size,
         "raw_game_type": to_text(raw.get("game_type")),
+        "raw_date_text": raw_date_text,
     }
 
 
@@ -830,7 +925,7 @@ def estimate_boost_from_frames(raw: dict[str, Any]) -> dict[str, dict[str, float
     return player_stats
 
 
-def canonicalize_replay(raw: dict[str, Any], replay_id: str) -> dict[str, Any]:
+def canonicalize_replay(raw: dict[str, Any], replay_id: str, *, file_mtime_ns: int | None = None) -> dict[str, Any]:
     metadata = extract_metadata(raw)
     players = extract_players(raw)
     teams = extract_teams(raw)
@@ -865,11 +960,24 @@ def canonicalize_replay(raw: dict[str, Any], replay_id: str) -> dict[str, Any]:
             player["big_boosts"] = to_int(extra.get("big_boosts"))
             player["small_boosts"] = to_int(extra.get("small_boosts"))
 
+    if not metadata.get("date") and file_mtime_ns:
+        try:
+            metadata["date"] = datetime.fromtimestamp(file_mtime_ns / 1_000_000_000, tz=timezone.utc).isoformat()
+            metadata["date_source"] = "file_mtime_ns"
+        except (OSError, OverflowError, ValueError):
+            metadata["date"] = datetime.now(timezone.utc).isoformat()
+            metadata["date_source"] = "fallback_now"
+    elif not metadata.get("date"):
+        metadata["date"] = datetime.now(timezone.utc).isoformat()
+        metadata["date_source"] = "fallback_now"
+
     return {
         "replay_id": replay_id,
         "date": metadata["date"],
+        "date_source": metadata["date_source"],
         "match_type": metadata["match_type"],
         "game_mode": metadata["game_mode"],
+        "mode_source": metadata["mode_source"],
         "ranked": metadata["ranked"],
         "tournament": metadata["tournament"],
         "map_name": metadata["map_name"],
@@ -884,6 +992,7 @@ def canonicalize_replay(raw: dict[str, Any], replay_id: str) -> dict[str, Any]:
         "primary_player_team": metadata["primary_player_team"],
         "unfair_team_size": metadata["unfair_team_size"],
         "raw_game_type": metadata["raw_game_type"],
+        "raw_date_text": metadata["raw_date_text"],
         "players": players,
         "teams": teams,
     }
@@ -916,16 +1025,44 @@ def parse_or_cache_replay(
                 break
         return not has_any_non_zero
 
+    def _needs_metadata_refresh(canonical: dict[str, Any]) -> bool:
+        if not canonical.get("date_source"):
+            return True
+        if "raw_date_text" not in canonical:
+            return True
+        if not canonical.get("mode_source"):
+            return True
+
+        players = canonical.get("players")
+        if isinstance(players, list) and players:
+            if not any(to_text(p.get("online_id")) for p in players if isinstance(p, dict)):
+                return True
+
+        game_mode = to_text(canonical.get("game_mode"))
+        raw_game_type = to_text(canonical.get("raw_game_type")).lower()
+        team_size = to_int(canonical.get("team_size"))
+        if game_mode == "Rumble" and "soccar" in raw_game_type and team_size in {1, 2, 3, 4}:
+            return True
+        return False
+
     cached_error: str | None = None
     if use_cache:
         cached, cached_error = load_cached_canonical(digest, parsed_replays_dir=cache_dir)
         if cached:
-            needs_refresh = _needs_row_refresh(cached) or _needs_boost_refresh(cached)
+            needs_refresh = (
+                _needs_row_refresh(cached)
+                or _needs_boost_refresh(cached)
+                or _needs_metadata_refresh(cached)
+            )
             if needs_refresh:
                 raw_cached = load_cached_raw(digest, parsed_replays_dir=cache_dir)
                 if isinstance(raw_cached, dict):
                     try:
-                        refreshed = canonicalize_replay(raw_cached, replay_id=digest.replay_id)
+                        refreshed = canonicalize_replay(
+                            raw_cached,
+                            replay_id=digest.replay_id,
+                            file_mtime_ns=digest.file_mtime_ns,
+                        )
                         if use_cache and write_cache:
                             store_cache(
                                 digest,
@@ -966,7 +1103,7 @@ def parse_or_cache_replay(
                 store_raw_json(digest.replay_id, raw, raw_replays_dir=raw_dir)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("could not store raw replay json replay=%s error=%s", digest.replay_id, exc)
-        canonical = canonicalize_replay(raw, replay_id=digest.replay_id)
+        canonical = canonicalize_replay(raw, replay_id=digest.replay_id, file_mtime_ns=digest.file_mtime_ns)
         if use_cache and write_cache:
             store_cache(
                 digest,
@@ -1014,10 +1151,7 @@ def pick_player(
         for player in players:
             pid = id_key(player.get("player_id"))
             oid = id_key(player.get("online_id"))
-            if (
-                (pid and (pid == target_id or target_id in pid or pid in target_id))
-                or (oid and (oid == target_id or target_id in oid or oid in target_id))
-            ):
+            if id_matches(pid, target_id) or id_matches(oid, target_id):
                 return player
 
     if target_name:
@@ -1082,37 +1216,47 @@ def build_row(
         team_players = [p for p in players if to_int(p.get("team")) == selected_team]
     opponents = [p for p in players if to_int(p.get("team")) != selected_team]
 
-    def platform_code(value: Any) -> str:
-        text = to_text(value).lower()
-        if "steam" in text:
-            return "S"
-        if "epic" in text:
-            return "E"
-        if "xbox" in text:
-            return "X"
-        if "ps4" in text or "ps5" in text or "playstation" in text:
-            return "P"
-        if "switch" in text:
-            return "N"
-        return "?"
+    def platform_meta(player: dict[str, Any]) -> tuple[str, str]:
+        platform = to_text(player.get("platform"))
+        platform_kind = to_text(player.get("platform_kind"))
+        combined = " ".join(part for part in (platform, platform_kind) if part).lower()
+        if "steam" in combined:
+            return "S", "Steam"
+        if "epic" in combined:
+            return "E", "Epic"
+        if "xbox" in combined or "xbl" in combined or "microsoft" in combined:
+            return "X", "Xbox"
+        if any(token in combined for token in ("ps4", "ps5", "psn", "playstation", "sony")):
+            return "P", "PlayStation"
+        if "switch" in combined or "nintendo" in combined:
+            return "N", "Nintendo Switch"
+        return "?", ""
 
     def serialize_player(player: dict[str, Any]) -> dict[str, Any]:
         platform = to_text(player.get("platform"))
+        platform_kind = to_text(player.get("platform_kind"))
         is_bot = bool(player.get("is_bot"))
+        code, label = platform_meta(player)
         return {
             "name": to_text(player.get("name")),
             "player_id": to_text(player.get("player_id")),
             "online_id": to_text(player.get("online_id")),
+            "team": to_int(player.get("team")),
             "score": to_int(player.get("score")),
             "goals": to_int(player.get("goals")),
             "assists": to_int(player.get("assists")),
             "saves": to_int(player.get("saves")),
             "shots": to_int(player.get("shots")),
+            "touches": to_int(player.get("touches")),
+            "clears": to_int(player.get("clears")),
+            "centers": to_int(player.get("centers")),
             "demos": to_int(player.get("demos")),
             "big_boosts": to_int(player.get("big_boosts")),
             "small_boosts": to_int(player.get("small_boosts")),
             "platform": platform,
-            "platform_code": "B" if is_bot else platform_code(platform),
+            "platform_kind": platform_kind,
+            "platform_label": "Bot" if is_bot else label,
+            "platform_code": "B" if is_bot else code,
             "is_bot": is_bot,
         }
 
@@ -1124,6 +1268,9 @@ def build_row(
     team_assists_total = total("assists", team_players)
     team_saves_total = total("saves", team_players)
     team_shots_total = total("shots", team_players)
+    team_touches_total = total("touches", team_players)
+    team_clears_total = total("clears", team_players)
+    team_centers_total = total("centers", team_players)
     team_demos_total = total("demos", team_players)
     team_big_boosts_total = total("big_boosts", team_players)
     team_small_boosts_total = total("small_boosts", team_players)
@@ -1133,6 +1280,9 @@ def build_row(
     opp_assists_total = total("assists", opponents)
     opp_saves_total = total("saves", opponents)
     opp_shots_total = total("shots", opponents)
+    opp_touches_total = total("touches", opponents)
+    opp_clears_total = total("clears", opponents)
+    opp_centers_total = total("centers", opponents)
     opp_demos_total = total("demos", opponents)
     opp_big_boosts_total = total("big_boosts", opponents)
     opp_small_boosts_total = total("small_boosts", opponents)
@@ -1145,6 +1295,9 @@ def build_row(
     assists = team_assists_total
     saves = team_saves_total
     shots = team_shots_total
+    touches = team_touches_total
+    clears = team_clears_total
+    centers = team_centers_total
     demos = team_demos_total
     boost_total = team_boost_total
 
@@ -1167,6 +1320,9 @@ def build_row(
     lobby_assists_total = assists + opp_assists_total
     lobby_saves_total = saves + opp_saves_total
     lobby_shots_total = shots + opp_shots_total
+    lobby_touches_total = touches + opp_touches_total
+    lobby_clears_total = clears + opp_clears_total
+    lobby_centers_total = centers + opp_centers_total
     lobby_demos_total = demos + opp_demos_total
 
     team_avg_score = ratio(team_score_total, float(max(1, len(team_players))))
@@ -1193,6 +1349,10 @@ def build_row(
     ]
     team_players_detail = [serialize_player(p) for p in team_players]
     opponent_players_detail = [serialize_player(p) for p in opponents]
+    blue_players = [serialize_player(p) for p in players if to_int(p.get("team")) == 0]
+    orange_players = [serialize_player(p) for p in players if to_int(p.get("team")) == 1]
+    blue_names = [str(p.get("name", "")).strip() for p in players if to_int(p.get("team")) == 0 and str(p.get("name", "")).strip()]
+    orange_names = [str(p.get("name", "")).strip() for p in players if to_int(p.get("team")) == 1 and str(p.get("name", "")).strip()]
 
     player_name = str(selected.get("name", ""))
     target_id = (player_id or "").strip().lower()
@@ -1254,6 +1414,12 @@ def build_row(
         "opponent_player_names": opponent_names,
         "team_players": team_players_detail,
         "opponent_players": opponent_players_detail,
+        "blue_player_names": blue_names,
+        "orange_player_names": orange_names,
+        "blue_players": blue_players,
+        "orange_players": orange_players,
+        "blue_score": team_scores.get(0, 0),
+        "orange_score": team_scores.get(1, 0),
         "teammate_avg_score": team_avg_score,
         "online_id": to_text(selected.get("online_id")),
         "platform": to_text(selected.get("platform")),
@@ -1264,6 +1430,9 @@ def build_row(
         "player_assists": to_int(selected.get("assists")),
         "player_saves": to_int(selected.get("saves")),
         "player_shots": to_int(selected.get("shots")),
+        "player_touches": to_int(selected.get("touches")),
+        "player_clears": to_int(selected.get("clears")),
+        "player_centers": to_int(selected.get("centers")),
         "player_demos": to_int(selected.get("demos")),
         "player_big_boosts": to_int(selected.get("big_boosts")),
         "player_small_boosts": to_int(selected.get("small_boosts")),
@@ -1272,6 +1441,9 @@ def build_row(
         "assists": assists,
         "saves": saves,
         "shots": shots,
+        "touches": touches,
+        "clears": clears,
+        "centers": centers,
         "demos": demos,
         "big_boosts": team_big_boosts_total,
         "small_boosts": team_small_boosts_total,
@@ -1296,6 +1468,9 @@ def build_row(
         "assists_share_team": ratio(assists, lobby_assists_total),
         "saves_share_team": ratio(saves, lobby_saves_total),
         "shots_share_team": ratio(shots, lobby_shots_total),
+        "touches_share_team": ratio(touches, lobby_touches_total),
+        "clears_share_team": ratio(clears, lobby_clears_total),
+        "centers_share_team": ratio(centers, lobby_centers_total),
         "demos_share_team": ratio(demos, lobby_demos_total),
         "score_diff_vs_others": score - opp_score_total,
         "score_diff_vs_mate": score - team_avg_score,
@@ -1308,6 +1483,12 @@ def build_row(
         "saves_diff_vs_opponents": saves - opp_saves_total,
         "shots_diff_vs_others": shots - opp_shots_total,
         "shots_diff_vs_opponents": shots - opp_shots_total,
+        "touches_diff_vs_others": touches - opp_touches_total,
+        "touches_diff_vs_opponents": touches - opp_touches_total,
+        "clears_diff_vs_others": clears - opp_clears_total,
+        "clears_diff_vs_opponents": clears - opp_clears_total,
+        "centers_diff_vs_others": centers - opp_centers_total,
+        "centers_diff_vs_opponents": centers - opp_centers_total,
         "demos_diff_vs_others": demos - opp_demos_total,
         "demos_diff_vs_opponents": demos - opp_demos_total,
         "big_boosts_diff_vs_others": team_big_boosts_total - opp_big_boosts_total,

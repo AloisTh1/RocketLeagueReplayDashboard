@@ -1,19 +1,46 @@
+import { didPlayerWin } from "./playerTracking";
 import { extractPlayerNames } from "./players";
 
-export function filterRecentRows(rows, tableSearch, tableResultFilter) {
+function fixedBlueOrangeRosters(row) {
+  const rawTeamColor = String(row?.team_color || "").toLowerCase();
+  return {
+    blue: extractPlayerNames(
+      row?.blue_players || (rawTeamColor === "orange" ? row?.opponent_players : row?.team_players),
+      row?.blue_player_names || (rawTeamColor === "orange" ? row?.opponent_player_names : row?.team_player_names),
+    ),
+    orange: extractPlayerNames(
+      row?.orange_players || (rawTeamColor === "orange" ? row?.team_players : row?.opponent_players),
+      row?.orange_player_names || (rawTeamColor === "orange" ? row?.team_player_names : row?.opponent_player_names),
+    ),
+  };
+}
+
+function fixedColorResult(row) {
+  const rawTeamColor = String(row?.team_color || "").toLowerCase();
+  const teamScore = Number(row?.team_score || 0);
+  const opponentScore = Number(row?.opponent_score || 0);
+  const blueScore = Number.isFinite(Number(row?.blue_score)) ? Number(row.blue_score) : (rawTeamColor === "orange" ? opponentScore : teamScore);
+  const orangeScore = Number.isFinite(Number(row?.orange_score)) ? Number(row.orange_score) : (rawTeamColor === "orange" ? teamScore : opponentScore);
+  if (blueScore === orangeScore) return 0;
+  return blueScore > orangeScore ? 1 : -1;
+}
+
+export function filterRecentRows(rows, tableSearch, tableResultFilter, trackedPlayerId = "") {
   const q = String(tableSearch || "").trim().toLowerCase();
   return (rows || []).filter((r) => {
-    if (tableResultFilter === "win" && !r?.won) return false;
-    if (tableResultFilter === "loss" && r?.won) return false;
+    const playerWon = didPlayerWin(r, trackedPlayerId);
+    if (tableResultFilter === "win" && !playerWon) return false;
+    if (tableResultFilter === "loss" && playerWon) return false;
     if (!q) return true;
+    const rosters = fixedBlueOrangeRosters(r);
     const haystack = [
       r?.id,
       r?.replay_name,
       r?.map_name,
       r?.match_type,
       r?.game_mode,
-      ...extractPlayerNames(r?.team_players, r?.team_player_names),
-      ...extractPlayerNames(r?.opponent_players, r?.opponent_player_names),
+      ...rosters.blue,
+      ...rosters.orange,
     ]
       .map((v) => String(v || "").toLowerCase())
       .join(" | ");
@@ -32,15 +59,15 @@ export function getRecentSortValue(row, colId) {
     case "mode":
       return String(row?.game_mode || "").toLowerCase();
     case "result":
-      return row?.won ? 1 : 0;
+      return fixedColorResult(row);
     case "scoreline":
       return Number(row?.team_score || 0) - Number(row?.opponent_score || 0);
     case "duration":
       return Number(row?.duration_seconds || 0);
     case "team_players":
-      return String(extractPlayerNames(row?.team_players, row?.team_player_names).join(",")).toLowerCase();
+      return String(fixedBlueOrangeRosters(row).blue.join(",")).toLowerCase();
     case "opponents":
-      return String(extractPlayerNames(row?.opponent_players, row?.opponent_player_names).join(",")).toLowerCase();
+      return String(fixedBlueOrangeRosters(row).orange.join(",")).toLowerCase();
     case "replay":
       return String(row?.id || "").toLowerCase();
     default:

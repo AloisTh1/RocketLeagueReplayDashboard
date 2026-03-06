@@ -13,7 +13,9 @@ export function normalizeIdentity(value) {
 
 function idMatches(candidate, target) {
   if (!candidate || !target) return false;
-  return candidate === target || candidate.includes(target) || target.includes(candidate);
+  if (candidate === target) return true;
+  if (candidate.length < 6 || target.length < 6) return false;
+  return candidate.includes(target) || target.includes(candidate);
 }
 
 function ratio(num, den) {
@@ -22,6 +24,12 @@ function ratio(num, den) {
 }
 
 function rowRoster(row) {
+  if (Array.isArray(row?.blue_players) || Array.isArray(row?.orange_players)) {
+    return [
+      ...(Array.isArray(row?.blue_players) ? row.blue_players : []),
+      ...(Array.isArray(row?.orange_players) ? row.orange_players : []),
+    ];
+  }
   return [
     ...(Array.isArray(row?.team_players) ? row.team_players : []),
     ...(Array.isArray(row?.opponent_players) ? row.opponent_players : []),
@@ -36,7 +44,36 @@ function opponentRoster(row) {
   return Array.isArray(row?.opponent_players) ? row.opponent_players : [];
 }
 
-function samePlayer(a, b) {
+function colorRosters(row) {
+  if (Array.isArray(row?.blue_players) || Array.isArray(row?.orange_players)) {
+    return {
+      blue: Array.isArray(row?.blue_players) ? row.blue_players : [],
+      orange: Array.isArray(row?.orange_players) ? row.orange_players : [],
+    };
+  }
+  const rawTeamColor = String(row?.team_color || "").toLowerCase();
+  const rawTeamPlayers = teamRoster(row);
+  const rawOpponentPlayers = opponentRoster(row);
+  return rawTeamColor === "orange"
+    ? { blue: rawOpponentPlayers, orange: rawTeamPlayers }
+    : { blue: rawTeamPlayers, orange: rawOpponentPlayers };
+}
+
+function colorScores(row) {
+  const explicitBlue = toFinite(row?.blue_score);
+  const explicitOrange = toFinite(row?.orange_score);
+  if (explicitBlue !== null || explicitOrange !== null) {
+    return { blueScore: explicitBlue, orangeScore: explicitOrange };
+  }
+  const rawTeamColor = String(row?.team_color || "").toLowerCase();
+  const teamScore = toFinite(row?.team_score);
+  const opponentScore = toFinite(row?.opponent_score);
+  return rawTeamColor === "orange"
+    ? { blueScore: opponentScore, orangeScore: teamScore }
+    : { blueScore: teamScore, orangeScore: opponentScore };
+}
+
+export function samePlayer(a, b) {
   if (!a || !b) return false;
   const aPid = normalizeIdentity(a?.player_id);
   const aOid = normalizeIdentity(a?.online_id);
@@ -93,6 +130,9 @@ function fallbackSelectedPlayerFromRow(row) {
     assists: toFinite(row?.player_assists),
     saves: toFinite(row?.player_saves),
     shots: toFinite(row?.player_shots),
+    touches: toFinite(row?.player_touches),
+    clears: toFinite(row?.player_clears),
+    centers: toFinite(row?.player_centers),
     demos: toFinite(row?.player_demos),
     big_boosts: toFinite(row?.player_big_boosts),
     small_boosts: toFinite(row?.player_small_boosts),
@@ -103,6 +143,9 @@ function fallbackSelectedPlayerFromRow(row) {
     fallback.assists,
     fallback.saves,
     fallback.shots,
+    fallback.touches,
+    fallback.clears,
+    fallback.centers,
     fallback.demos,
     fallback.big_boosts,
     fallback.small_boosts,
@@ -169,21 +212,89 @@ function resolvePlayerForRow(row, trackedPlayerId) {
   return findSelectedPlayerInRow(row) || fallbackSelectedPlayerFromRow(row);
 }
 
-function teamTotalMetric(row, metricKey) {
+export function resolvePerspective(row, trackedPlayerId) {
+  const selectedPlayer = resolvePlayerForRow(row, trackedPlayerId);
+  const { blue, orange } = colorRosters(row);
+  const { blueScore, orangeScore } = colorScores(row);
+  const rawTeamPlayers = teamRoster(row);
+  const rawOpponentPlayers = opponentRoster(row);
+  const rawTeamColor = String(row?.team_color || "").toLowerCase();
+  let teamColor = rawTeamColor === "orange" ? "orange" : "blue";
+  let isSwapped = false;
+  if (selectedPlayer) {
+    const onBlue = blue.some((player) => samePlayer(player, selectedPlayer));
+    const onOrange = orange.some((player) => samePlayer(player, selectedPlayer));
+    if (onBlue || onOrange) {
+      teamColor = onOrange ? "orange" : "blue";
+      isSwapped = teamColor !== (rawTeamColor === "orange" ? "orange" : "blue");
+    } else {
+      const onTeam = rawTeamPlayers.some((player) => samePlayer(player, selectedPlayer));
+      const onOpponent = rawOpponentPlayers.some((player) => samePlayer(player, selectedPlayer));
+      isSwapped = onOpponent && !onTeam;
+      teamColor = isSwapped
+        ? (rawTeamColor === "orange" ? "blue" : "orange")
+        : (rawTeamColor === "orange" ? "orange" : "blue");
+    }
+  }
+  const teamPlayers = teamColor === "orange" ? orange : blue;
+  const opponentPlayers = teamColor === "orange" ? blue : orange;
+  const teamScore = teamColor === "orange" ? orangeScore : blueScore;
+  const opponentScore = teamColor === "orange" ? blueScore : orangeScore;
+  const wonFromScore =
+    Number.isFinite(teamScore) && Number.isFinite(opponentScore)
+      ? teamScore > opponentScore
+      : null;
+  const won = wonFromScore ?? (isSwapped ? !Boolean(row?.won) : Boolean(row?.won));
+  return {
+    selectedPlayer,
+    teamPlayers,
+    opponentPlayers,
+    teamScore,
+    opponentScore,
+    teamColor,
+    won,
+    isSwapped,
+  };
+}
+
+export function didPlayerWin(row, trackedPlayerId) {
+  const tracked = normalizeIdentity(trackedPlayerId);
+  if (tracked) {
+    const trackedPlayer =
+      findTrackedPlayerInRow(row, trackedPlayerId) ||
+      (rowSelectedPlayerMatchesTracked(row, trackedPlayerId) ? fallbackSelectedPlayerFromRow(row) : null);
+    if (trackedPlayer) {
+      const { blue, orange } = colorRosters(row);
+      const onBlue = blue.some((player) => samePlayer(player, trackedPlayer));
+      const onOrange = orange.some((player) => samePlayer(player, trackedPlayer));
+      const { blueScore, orangeScore } = colorScores(row);
+      if ((onBlue || onOrange) && Number.isFinite(blueScore) && Number.isFinite(orangeScore) && blueScore !== orangeScore) {
+        return onBlue ? blueScore > orangeScore : orangeScore > blueScore;
+      }
+    }
+  }
+  return resolvePerspective(row, trackedPlayerId)?.won ?? Boolean(row?.won);
+}
+
+function teamTotalMetric(row, metricKey, trackedPlayerId) {
+  const perspective = resolvePerspective(row, trackedPlayerId);
   if (metricKey === "boost_total") {
-    const big = teamTotalMetric(row, "big_boosts");
-    const small = teamTotalMetric(row, "small_boosts");
+    const big = teamTotalMetric(row, "big_boosts", trackedPlayerId);
+    const small = teamTotalMetric(row, "small_boosts", trackedPlayerId);
     if (big === null && small === null) return null;
     return Number(big ?? 0) + Number(small ?? 0);
   }
-  const fromRoster = sumMetric(teamRoster(row), metricKey);
+  const fromRoster = sumMetric(perspective?.teamPlayers, metricKey);
   if (fromRoster !== null) return fromRoster;
   const fallbackMap = {
-    score: row?.score,
+    score: perspective?.teamScore ?? row?.score,
     goals: row?.goals,
     assists: row?.assists,
     saves: row?.saves,
     shots: row?.shots,
+    touches: row?.touches,
+    clears: row?.clears,
+    centers: row?.centers,
     demos: row?.demos,
     big_boosts: row?.team_big_boosts ?? row?.big_boosts,
     small_boosts: row?.team_small_boosts ?? row?.small_boosts,
@@ -191,34 +302,47 @@ function teamTotalMetric(row, metricKey) {
   return toFinite(fallbackMap[metricKey]);
 }
 
-function opponentTotalMetric(row, metricKey) {
+function opponentTotalMetric(row, metricKey, trackedPlayerId) {
+  const perspective = resolvePerspective(row, trackedPlayerId);
   if (metricKey === "boost_total") {
-    const big = opponentTotalMetric(row, "big_boosts");
-    const small = opponentTotalMetric(row, "small_boosts");
+    const big = opponentTotalMetric(row, "big_boosts", trackedPlayerId);
+    const small = opponentTotalMetric(row, "small_boosts", trackedPlayerId);
     if (big === null && small === null) return null;
     return Number(big ?? 0) + Number(small ?? 0);
   }
-  const fromRoster = sumMetric(opponentRoster(row), metricKey);
+  const fromRoster = sumMetric(perspective?.opponentPlayers, metricKey);
   if (fromRoster !== null) return fromRoster;
-  if (metricKey === "score") return toFinite(row?.opponent_score);
-  const teamTotal = teamTotalMetric(row, metricKey);
+  if (metricKey === "score") return perspective?.opponentScore ?? toFinite(row?.opponent_score);
+  const teamTotal = teamTotalMetric(row, metricKey, trackedPlayerId);
   if (teamTotal === null) return null;
   const diffVsOpp = toFinite(row?.[`${metricKey}_diff_vs_opponents`]);
-  if (diffVsOpp !== null) return teamTotal - diffVsOpp;
+  if (diffVsOpp !== null) return perspective?.isSwapped ? teamTotal + diffVsOpp : teamTotal - diffVsOpp;
   const diffVsOthers = toFinite(row?.[`${metricKey}_diff_vs_others`]);
-  if (diffVsOthers !== null) return teamTotal - diffVsOthers;
+  if (diffVsOthers !== null) return perspective?.isSwapped ? teamTotal + diffVsOthers : teamTotal - diffVsOthers;
   return null;
 }
 
-function othersTotalMetric(row, metricKey, selectedPlayer) {
-  const roster = rowRoster(row).filter((player) => !samePlayer(player, selectedPlayer));
+function othersTotalMetric(row, metricKey, selectedPlayer, trackedPlayerId) {
+  const perspective = resolvePerspective(row, trackedPlayerId);
+  const roster = [...(perspective?.teamPlayers || []), ...(perspective?.opponentPlayers || [])].filter((player) => !samePlayer(player, selectedPlayer));
   const fromRoster = sumMetric(roster, metricKey);
   if (fromRoster !== null) return fromRoster;
-  return opponentTotalMetric(row, metricKey);
+  return opponentTotalMetric(row, metricKey, trackedPlayerId);
 }
 
-function teammateAverageMetric(row, metricKey, selectedPlayer) {
-  const mates = teamRoster(row).filter((player) => !samePlayer(player, selectedPlayer));
+function lobbyAverageMetric(row, metricKey, trackedPlayerId) {
+  const perspective = resolvePerspective(row, trackedPlayerId);
+  const roster = [...(perspective?.teamPlayers || []), ...(perspective?.opponentPlayers || [])];
+  if (roster.length > 0) {
+    const total = sumMetric(roster, metricKey);
+    if (total !== null) return total / roster.length;
+  }
+  return null;
+}
+
+function teammateAverageMetric(row, metricKey, selectedPlayer, trackedPlayerId) {
+  const perspective = resolvePerspective(row, trackedPlayerId);
+  const mates = (perspective?.teamPlayers || []).filter((player) => !samePlayer(player, selectedPlayer));
   if (mates.length > 0) {
     const total = sumMetric(mates, metricKey);
     if (total !== null) return total / mates.length;
@@ -227,7 +351,7 @@ function teammateAverageMetric(row, metricKey, selectedPlayer) {
   return null;
 }
 
-function computeDerivedPlayerMetric(row, selectedPlayer, metricKey) {
+function computeDerivedPlayerMetric(row, selectedPlayer, metricKey, trackedPlayerId) {
   if (!selectedPlayer) return null;
   if (metricKey === "pressure_index") {
     const score = metricFromPlayer(selectedPlayer, "score") ?? 0;
@@ -240,28 +364,34 @@ function computeDerivedPlayerMetric(row, selectedPlayer, metricKey) {
   }
   if (metricKey === "score_diff_vs_mate") {
     const score = metricFromPlayer(selectedPlayer, "score");
-    const mateAvgScore = teammateAverageMetric(row, "score", selectedPlayer);
+    const mateAvgScore = teammateAverageMetric(row, "score", selectedPlayer, trackedPlayerId);
     if (score === null || mateAvgScore === null) return null;
     return score - mateAvgScore;
+  }
+  if (metricKey === "score_vs_lobby_avg") {
+    const score = metricFromPlayer(selectedPlayer, "score");
+    const lobbyAvgScore = lobbyAverageMetric(row, "score", trackedPlayerId);
+    if (score === null || lobbyAvgScore === null) return null;
+    return score - lobbyAvgScore;
   }
   if (metricKey.endsWith("_share_team")) {
     const baseMetric = metricKey.replace("_share_team", "");
     const playerValue = metricFromPlayer(selectedPlayer, baseMetric);
-    const teamValue = teamTotalMetric(row, baseMetric);
+    const teamValue = teamTotalMetric(row, baseMetric, trackedPlayerId);
     if (playerValue === null || teamValue === null) return null;
     return ratio(playerValue, teamValue);
   }
   if (metricKey.endsWith("_diff_vs_opponents")) {
     const baseMetric = metricKey.replace("_diff_vs_opponents", "");
     const playerValue = metricFromPlayer(selectedPlayer, baseMetric);
-    const opponentsValue = opponentTotalMetric(row, baseMetric);
+    const opponentsValue = opponentTotalMetric(row, baseMetric, trackedPlayerId);
     if (playerValue === null || opponentsValue === null) return null;
     return playerValue - opponentsValue;
   }
   if (metricKey.endsWith("_diff_vs_others")) {
     const baseMetric = metricKey.replace("_diff_vs_others", "");
     const playerValue = metricFromPlayer(selectedPlayer, baseMetric);
-    const othersValue = othersTotalMetric(row, baseMetric, selectedPlayer);
+    const othersValue = othersTotalMetric(row, baseMetric, selectedPlayer, trackedPlayerId);
     if (playerValue === null || othersValue === null) return null;
     return playerValue - othersValue;
   }
@@ -276,7 +406,7 @@ export function isTrackedRow(row, trackedPlayerId) {
 export function findPlayerMetric(row, metricKey, trackedPlayerId) {
   const selectedPlayer = resolvePlayerForRow(row, trackedPlayerId);
   if (!selectedPlayer) return null;
-  const derived = computeDerivedPlayerMetric(row, selectedPlayer, metricKey);
+  const derived = computeDerivedPlayerMetric(row, selectedPlayer, metricKey, trackedPlayerId);
   if (derived !== null) return derived;
   const direct = metricFromPlayer(selectedPlayer, metricKey);
   if (direct !== null) return direct;

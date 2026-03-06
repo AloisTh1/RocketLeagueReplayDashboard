@@ -1,14 +1,18 @@
-function resolvePlatformCode(platform, explicitCode, isBot) {
+function resolvePlatformMeta(platform, platformKind, platformLabel, explicitCode, isBot) {
   const direct = String(explicitCode || "").trim().toUpperCase();
-  if (direct) return direct;
-  if (isBot) return "B";
-  const value = String(platform || "").toLowerCase();
-  if (value.includes("steam")) return "S";
-  if (value.includes("epic")) return "E";
-  if (value.includes("xbox")) return "X";
-  if (value.includes("ps4") || value.includes("ps5") || value.includes("playstation")) return "P";
-  if (value.includes("switch") || value.includes("nintendo")) return "N";
-  return "?";
+  const label = String(platformLabel || "").trim();
+  if (isBot) return { code: "B", label: "Bot" };
+  if (direct && label) return { code: direct, label };
+  const value = `${String(platform || "")} ${String(platformKind || "")}`.toLowerCase();
+  if (direct === "S" || value.includes("steam")) return { code: "S", label: "Steam" };
+  if (direct === "E" || value.includes("epic")) return { code: "E", label: "Epic" };
+  if (direct === "X" || value.includes("xbox") || value.includes("xbl") || value.includes("microsoft")) return { code: "X", label: "Xbox" };
+  if (direct === "P" || value.includes("ps4") || value.includes("ps5") || value.includes("psn") || value.includes("playstation") || value.includes("sony")) {
+    return { code: "P", label: "PlayStation" };
+  }
+  if (direct === "N" || value.includes("switch") || value.includes("nintendo")) return { code: "N", label: "Nintendo Switch" };
+  if (direct) return { code: direct, label: label || "Unknown platform" };
+  return { code: "?", label: label || "Unknown platform" };
 }
 
 export function extractPlayerNames(detailPlayers, fallbackNames) {
@@ -31,11 +35,20 @@ export function normalizePlayerRoster(detailPlayers, fallbackNames) {
         const name = String(player?.name || "").trim();
         if (!name) return null;
         const isBot = Boolean(player?.is_bot);
+        const platformMeta = resolvePlatformMeta(
+          player?.platform,
+          player?.platform_kind,
+          player?.platform_label,
+          player?.platform_code,
+          isBot,
+        );
         return {
           name,
           score: Number(player?.score),
           platform: String(player?.platform || ""),
-          code: resolvePlatformCode(player?.platform, player?.platform_code, isBot),
+          platformKind: String(player?.platform_kind || ""),
+          platformLabel: platformMeta.label,
+          code: platformMeta.code,
         };
       })
       .filter(Boolean);
@@ -47,7 +60,9 @@ export function normalizePlayerRoster(detailPlayers, fallbackNames) {
 export function platformTitle(player) {
   const code = String(player?.code || "").toUpperCase();
   if (code === "B") return "Bot";
-  const raw = String(player?.platform || "").trim();
+  const label = String(player?.platformLabel || "").trim();
+  if (label) return label;
+  const raw = `${String(player?.platformKind || "").trim()} ${String(player?.platform || "").trim()}`.trim();
   if (!raw) return "Unknown platform";
   return raw.replace(/^onlineplatform_/i, "").replace(/_/g, " ");
 }

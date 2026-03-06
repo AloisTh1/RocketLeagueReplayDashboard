@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
 import logging
-import os
 import sys
-import subprocess
+import os
 import time
 import threading
 from contextlib import asynccontextmanager
@@ -19,7 +17,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 try:
-    from .cache import DEFAULT_CACHE_ROOT_DIR, clear_cache_store, ensure_db, is_replay_cached, resolve_store_dirs
+    from .api_utils import (
+        pick_replays_for_cache_mode,
+        open_directory_in_explorer,
+        reason_key,
+        resolve_replay_file,
+        validate_clear_cache_paths,
+    )
+    from .cache import clear_cache_store, ensure_db, resolve_store_dirs
     from .config import (
         candidate_boxcars_paths,
         default_demos_dir,
@@ -38,7 +43,14 @@ except ImportError:
     # Fallback for script/frozen execution (e.g. PyInstaller onefile) where
     # package-relative imports may not resolve with __package__ unset.
     try:
-        from backend.cache import DEFAULT_CACHE_ROOT_DIR, clear_cache_store, ensure_db, is_replay_cached, resolve_store_dirs
+        from backend.api_utils import (
+            pick_replays_for_cache_mode,
+            open_directory_in_explorer,
+            reason_key,
+            resolve_replay_file,
+            validate_clear_cache_paths,
+        )
+        from backend.cache import clear_cache_store, ensure_db, resolve_store_dirs
         from backend.config import (
             candidate_boxcars_paths,
             default_demos_dir,
@@ -54,7 +66,14 @@ except ImportError:
             summarize_monthly,
         )
     except ImportError:
-        from cache import DEFAULT_CACHE_ROOT_DIR, clear_cache_store, ensure_db, is_replay_cached, resolve_store_dirs
+        from api_utils import (
+            open_directory_in_explorer,
+            pick_replays_for_cache_mode,
+            reason_key,
+            resolve_replay_file,
+            validate_clear_cache_paths,
+        )
+        from cache import clear_cache_store, ensure_db, resolve_store_dirs
         from config import (
             candidate_boxcars_paths,
             default_demos_dir,
@@ -152,125 +171,6 @@ def _clear_cancel(run_id: str) -> None:
         _CANCEL_FLAGS.pop(run_id, None)
 
 
-def _is_subpath(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-        return True
-    except ValueError:
-        return False
-
-
-def _validate_clear_cache_paths(cache_dir: str | None, raw_dir: str | None) -> None:
-    allowed_root = DEFAULT_CACHE_ROOT_DIR.resolve()
-    checks = [
-        ("cache_dir", cache_dir),
-        ("raw_dir", raw_dir),
-    ]
-    for label, value in checks:
-        if not value:
-            continue
-        candidate = Path(value).expanduser().resolve()
-        if not _is_subpath(candidate, allowed_root):
-            raise HTTPException(
-                status_code=400,
-                detail=f"{label} must be inside app cache root: {allowed_root}",
-            )
-
-
-def _pick_replays_for_cache_mode(
-    digests: list[Any],
-    use_cache: bool,
-    load_cached_replays: bool,
-    cache_dir: str | None = None,
-) -> tuple[list[Any], int]:
-    if not use_cache:
-        return digests, 0
-    uncached = [digest for digest in digests if not is_replay_cached(digest, parsed_replays_dir=cache_dir)]
-    if load_cached_replays:
-        return digests, len(uncached)
-    # Strict mode: only load uncached replays.
-    return uncached, len(uncached)
-
-
-def _reason_key(error: str | None) -> str:
-    text = (error or "").lower()
-    if "no known attributes found" in text:
-        return "unsupported_replay_schema"
-    if "invalid json" in text:
-        return "invalid_json_output"
-    if "no player stats" in text:
-        return "missing_player_stats"
-    if "launch failed" in text:
-        return "boxcars_launch_failed"
-    return "other"
-
-
-def _safe_replay_id(replay_id: str) -> str:
-    safe = "".join(ch for ch in str(replay_id or "") if ch.isalnum() or ch in ("-", "_"))
-    return safe or "unknown_replay"
-
-
-def _resolve_replay_file(replay_id: str, demos_dir: str | None, cache_dir: str | None = None) -> Path:
-    rid = str(replay_id or "").strip()
-    if not rid:
-        raise HTTPException(status_code=422, detail="Missing replay_id")
-
-    # Accept absolute replay paths as a convenience.
-    direct = Path(rid).expanduser()
-    if direct.suffix.lower() == ".replay" and direct.is_file():
-        return direct
-
-    candidates: list[Path] = []
-    if demos_dir:
-        candidates.append(Path(demos_dir).expanduser() / f"{rid}.replay")
-    default_dir = default_demos_dir()
-    candidates.append(default_dir / f"{rid}.replay")
-
-    # Fallback: resolve path from cached replay metadata.
-    parsed_store, _ = resolve_store_dirs(parsed_replays_dir=cache_dir)
-    cache_file = parsed_store / f"{_safe_replay_id(rid)}.json"
-    if cache_file.is_file():
-        try:
-            payload = json.loads(cache_file.read_text(encoding="utf-8"))
-            replay_path = payload.get("replay_path")
-            if replay_path:
-                candidates.append(Path(str(replay_path)).expanduser())
-        except Exception:  # noqa: BLE001
-            pass
-
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = str(candidate).lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        if candidate.is_file():
-            return candidate
-
-    # Fallback: replay discovery is recursive, so direct path lookup may miss nested files.
-    # Search by replay stem in the configured demos tree and pick the newest match.
-    search_roots = [Path(demos_dir).expanduser()] if demos_dir else []
-    if default_dir not in search_roots:
-        search_roots.append(default_dir)
-    rid_lower = rid.lower()
-    for root in search_roots:
-        if not root.exists() or not root.is_dir():
-            continue
-        matches: list[Path] = []
-        for replay_file in root.rglob("*.replay"):
-            try:
-                if replay_file.stem.lower() == rid_lower:
-                    matches.append(replay_file)
-            except OSError:
-                continue
-        if matches:
-            matches.sort(key=lambda p: p.stat().st_mtime_ns if p.exists() else 0, reverse=True)
-            return matches[0]
-
-    tried = ", ".join(str(p) for p in candidates[:4])
-    raise HTTPException(status_code=404, detail=f"Replay not found for id '{rid}'. Tried: {tried}")
-
-
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     demos = default_demos_dir()
@@ -296,7 +196,7 @@ def clear_cache(
     cache_dir: str | None = Query(default=None),
     raw_dir: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    _validate_clear_cache_paths(cache_dir, raw_dir)
+    validate_clear_cache_paths(cache_dir, raw_dir)
     try:
         stats = clear_cache_store(parsed_replays_dir=cache_dir, raw_replays_dir=raw_dir)
     except Exception as exc:  # noqa: BLE001
@@ -317,16 +217,7 @@ def clear_cache_get(
 def open_cache_dir(cache_dir: str | None = Query(default=None)) -> dict[str, Any]:
     parsed_store, _ = resolve_store_dirs(parsed_replays_dir=cache_dir)
     parsed_store.mkdir(parents=True, exist_ok=True)
-    try:
-        if os.name == "nt":
-            try:
-                os.startfile(str(parsed_store))  # type: ignore[attr-defined]
-            except OSError:
-                subprocess.Popen(["explorer.exe", str(parsed_store)])
-        else:
-            raise RuntimeError("open cache directory is only supported on Windows")
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Could not open cache directory: {exc}") from exc
+    open_directory_in_explorer(parsed_store, "cache")
     return {"ok": True, "path": str(parsed_store)}
 
 
@@ -339,16 +230,7 @@ def open_cache_dir_get(cache_dir: str | None = Query(default=None)) -> dict[str,
 def open_raw_dir(raw_dir: str | None = Query(default=None)) -> dict[str, Any]:
     _, raw_store = resolve_store_dirs(raw_replays_dir=raw_dir)
     raw_store.mkdir(parents=True, exist_ok=True)
-    try:
-        if os.name == "nt":
-            try:
-                os.startfile(str(raw_store))  # type: ignore[attr-defined]
-            except OSError:
-                subprocess.Popen(["explorer.exe", str(raw_store)])
-        else:
-            raise RuntimeError("open raw directory is only supported on Windows")
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Could not open raw directory: {exc}") from exc
+    open_directory_in_explorer(raw_store, "raw")
     return {"ok": True, "path": str(raw_store)}
 
 
@@ -365,7 +247,7 @@ def replay_spatial(
     player_name: str | None = Query(default=None),
     cache_dir: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    replay_file = _resolve_replay_file(replay_id, demos_dir, cache_dir=cache_dir)
+    replay_file = resolve_replay_file(replay_id, demos_dir, cache_dir=cache_dir)
     boxcars = resolve_boxcars_path(boxcars_exe, allowed_user_paths=_ALLOWED_BOXCARS_PATHS)
     try:
         raw = run_boxcars_json(boxcars, replay_file)
@@ -433,7 +315,7 @@ def rocket_league_detect(
     end_dt = parse_date_param(end_date, is_end=True)
     demos = Path(demos_dir).expanduser()
     digests = get_replay_digests(demos, count=count, start_date=start_dt, end_date=end_dt)
-    selected, new_count = _pick_replays_for_cache_mode(
+    selected, new_count = pick_replays_for_cache_mode(
         digests,
         use_cache=use_cache,
         load_cached_replays=load_cached_replays,
@@ -488,7 +370,7 @@ def rocket_league_dashboard(
         LOGGER.warning("boxcars unavailable, switching to cache-only mode: %s", boxcars_error)
     effective_count = count if limit_replays else 2_000_000
     digests = get_replay_digests(demos, count=effective_count, start_date=start_dt, end_date=end_dt)
-    digests, new_count = _pick_replays_for_cache_mode(
+    digests, new_count = pick_replays_for_cache_mode(
         digests,
         use_cache=use_cache,
         load_cached_replays=load_cached_replays,
@@ -611,7 +493,7 @@ def rocket_league_dashboard(
 
                 if not replay:
                     failed_count += 1
-                    key = _reason_key(error)
+                    key = reason_key(error)
                     failed_by_reason[key] = failed_by_reason.get(key, 0) + 1
                     if len(failed_examples) < 25:
                         failed_examples.append(

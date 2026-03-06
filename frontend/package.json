@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test": "node --test tests/*.test.mjs",
     "build": "vite build",
     "build:prod": "vite build --mode production",
     "build:analyze": "vite build --mode production --debug",

@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { format, parseISO, subDays } from "date-fns";
-import { Activity, CalendarRange, Download, Filter, Gauge, Github, Info, Moon, Radar, Sun, Trophy } from "lucide-react";
+import { format, parseISO } from "date-fns";
+import { Activity, CalendarRange, Download, Filter, Gauge, Github, Info, Moon, Radar as RadarIcon, Sun, Trophy } from "lucide-react";
 import {
-  Area,
-  AreaChart,
   Bar,
   BarChart,
   Cell,
   CartesianGrid,
   Line,
   LineChart,
+  Legend,
+  PolarAngleAxis,
+  PolarGrid,
+  PolarRadiusAxis,
+  Radar as RadarSeries,
+  RadarChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -31,34 +35,60 @@ import {
 } from "./api";
 import { exportDashboardPng } from "./utils/exportImage";
 import { SETTINGS_KEY, THEME_KEY, defaults, initialTheme } from "./app/config";
-import { clampInt, num, pct, pctInt, signed, toAnchorId, toInputDate } from "./app/utils/formatters";
+import { clampInt, num, pct, pctInt, signed, toAnchorId } from "./app/utils/formatters";
 import { exportPdf, saveCsv } from "./app/utils/exporters";
 import { useBoostTrail } from "./app/hooks/useBoostTrail";
 import { computeDerived } from "./app/derived";
 import {
   ANALYTICS_VIEW_DEFS,
+  CATEGORY_DOCS,
   METRIC_DOCS,
   PLATFORM_LEGEND,
   RECENT_COLUMN_DEFS,
   RECENT_COLUMNS_KEY,
-  RECENT_TABLE_FULL_COLS_KEY,
   RECENT_TABLE_MAX_ROWS_KEY,
   TAB_META,
 } from "./features/dashboard/constants";
-import { extractPlayerNames, normalizePlayerRoster, platformTitle } from "./features/dashboard/players";
-import { findPlayerMetric, findTrackedPlayerInRow, isTrackedRow, normalizeIdentity } from "./features/dashboard/playerTracking";
+import { didPlayerWin, findPlayerMetric, isTrackedRow, normalizeIdentity, resolvePerspective } from "./features/dashboard/playerTracking";
 import { buildQuickLinks } from "./features/dashboard/quickLinks";
 import { filterRecentRows, paginateRecentRows, sortRecentRows } from "./features/dashboard/recentTable";
-
-function Tip({ text }) {
-  return (
-    <span className="tip" title={text} aria-label={text}>
-      ?
-    </span>
-  );
-}
+import { inferQuickPreset, quickDateRange } from "./features/dashboard/dateRanges";
+import { MAP_WINRATE_PRIMARY_KEY, MAP_WINRATE_SECONDARY_KEY, formatMapAxisLabel, selectMapWinRateChartRows } from "./features/dashboard/distribution";
+import { Tip } from "./features/dashboard/components/Tip";
+import { PlayerTrackingCallout } from "./features/dashboard/components/PlayerTrackingCallout";
+import { PlayerIdPickerModal } from "./features/dashboard/components/PlayerIdPickerModal";
+import { RecentMatchesSection } from "./features/dashboard/components/RecentMatchesSection";
+import { StatsInfoModal } from "./features/dashboard/components/StatsInfoModal";
+import { KPI_MARKDOWN_DOCS, kpiDoc } from "./features/dashboard/kpiDocs";
+import { buildTopKpiCards, computeTrackedPlayerOverview } from "./features/dashboard/kpis";
+import {
+  buildPlayerContributionTrend,
+  buildPlayerTrend,
+  buildRegressionSeries,
+  buildMateComparisonTrend,
+  buildMateContributionTrend,
+} from "./features/dashboard/trends";
 
 export default function App() {
+  const slurpIndicator = (big, small) => {
+    const safeBig = Number(big);
+    const safeSmall = Number(small);
+    if (!Number.isFinite(safeBig) || safeBig <= 0) return null;
+    if (!Number.isFinite(safeSmall) || safeSmall < 0) return null;
+    return safeSmall / safeBig;
+  };
+  const sortTableRows = (rows, sortState) => {
+    const direction = sortState?.dir === "desc" ? -1 : 1;
+    const column = sortState?.col || "";
+    return [...rows].sort((left, right) => {
+      const leftValue = left?.[column];
+      const rightValue = right?.[column];
+      if (typeof leftValue === "string" || typeof rightValue === "string") {
+        return String(leftValue || "").localeCompare(String(rightValue || "")) * direction;
+      }
+      return ((Number(leftValue) || 0) - (Number(rightValue) || 0)) * direction;
+    });
+  };
   const [filters, setFilters] = useState(() => {
     try {
       const raw = localStorage.getItem(SETTINGS_KEY);
@@ -85,6 +115,7 @@ export default function App() {
   const [topStatusPinned, setTopStatusPinned] = useState(false);
   const [topStatusDismissed, setTopStatusDismissed] = useState(false);
   const [statsInfoOpen, setStatsInfoOpen] = useState(false);
+  const [playerPickerOpen, setPlayerPickerOpen] = useState(false);
   const [replayConfigOpen, setReplayConfigOpen] = useState(true);
   const [loading, setLoading] = useState(false);
   const [detectedReplays, setDetectedReplays] = useState(0);
@@ -99,13 +130,12 @@ export default function App() {
   const [selectedReplayIds, setSelectedReplayIds] = useState([]);
   const [statsView, setStatsView] = useState("aggregate");
   const [analyticsView, setAnalyticsView] = useState("overview");
-  const [metricsScope, setMetricsScope] = useState("team");
+  const [showMateComparison, setShowMateComparison] = useState(false);
   const [focusedReplayId, setFocusedReplayId] = useState("");
   const [recentSort, setRecentSort] = useState({ col: "date", dir: "desc" });
-  const [recentFullColumns, setRecentFullColumns] = useState(() => {
-    const raw = localStorage.getItem(RECENT_TABLE_FULL_COLS_KEY);
-    return raw === "true";
-  });
+  const [groupedTypeSort, setGroupedTypeSort] = useState({ col: "games", dir: "desc" });
+  const [matesSort, setMatesSort] = useState({ col: "games", dir: "desc" });
+  const [enemiesSort, setEnemiesSort] = useState({ col: "games", dir: "desc" });
   const [tableSearch, setTableSearch] = useState("");
   const [tableResultFilter, setTableResultFilter] = useState("all");
   const [tablePage, setTablePage] = useState(1);
@@ -132,6 +162,43 @@ export default function App() {
   const stableRecent = dashboard.recent || [];
   const hasLoadedData = stableRecent.length > 0;
   const trackedPlayerId = useMemo(() => normalizeIdentity(filters.playerId), [filters.playerId]);
+  const playerPickerCandidates = useMemo(() => {
+    const byId = new Map();
+    for (const row of stableRecent) {
+      const seenInRow = new Set();
+      const roster = [
+        ...(Array.isArray(row?.blue_players) ? row.blue_players : []),
+        ...(Array.isArray(row?.orange_players) ? row.orange_players : []),
+        ...(Array.isArray(row?.team_players) ? row.team_players : []),
+        ...(Array.isArray(row?.opponent_players) ? row.opponent_players : []),
+      ];
+      for (const player of roster) {
+        const name = String(player?.name || "").trim();
+        const playerId = String(player?.player_id || "").trim();
+        const onlineId = String(player?.online_id || "").trim();
+        const preferredId = playerId && playerId !== "0" ? playerId : onlineId;
+        const normalized = normalizeIdentity(preferredId);
+        if (!name || !normalized || normalized === "0") continue;
+        if (seenInRow.has(normalized)) continue;
+        seenInRow.add(normalized);
+        const existing = byId.get(normalized) || {
+          name,
+          playerId,
+          onlineId,
+          preferredId,
+          platformCode: String(player?.platform_code || "?"),
+          platformLabel: String(player?.platform_label || ""),
+          games: 0,
+        };
+        existing.games += 1;
+        byId.set(normalized, existing);
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) => {
+      if (b.games !== a.games) return b.games - a.games;
+      return a.name.localeCompare(b.name);
+    });
+  }, [stableRecent]);
 
   useEffect(() => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(filters));
@@ -145,9 +212,6 @@ export default function App() {
     localStorage.setItem(RECENT_COLUMNS_KEY, JSON.stringify(visibleRecentColumns));
   }, [visibleRecentColumns]);
   useEffect(() => {
-    localStorage.setItem(RECENT_TABLE_FULL_COLS_KEY, String(recentFullColumns));
-  }, [recentFullColumns]);
-  useEffect(() => {
     localStorage.setItem(RECENT_TABLE_MAX_ROWS_KEY, String(maxTableRows));
   }, [maxTableRows]);
   useEffect(() => {
@@ -157,7 +221,7 @@ export default function App() {
     setTopStatusDismissed(false);
   }, [status]);
   useEffect(() => {
-    const inferred = inferLoadQuickPreset(filters.startDate, filters.endDate);
+    const inferred = inferQuickPreset(filters.startDate, filters.endDate);
     setLoadQuickPreset((prev) => (prev === inferred ? prev : inferred));
   }, [filters.startDate, filters.endDate]);
   useEffect(() => {
@@ -174,7 +238,6 @@ export default function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [statsInfoOpen]);
-
   const dateScopedRecent = useMemo(() => {
     return stableRecent.filter((r) => {
       const rowDate = String(r?.date || "");
@@ -240,10 +303,10 @@ export default function App() {
     }
     return selectedRecent[0] || null;
   }, [focusedReplayId, stableRecent, selectedRecent]);
-  const derived = useMemo(() => computeDerived(activeRecent), [activeRecent]);
+  const derived = useMemo(() => computeDerived(activeRecent, trackedPlayerId), [activeRecent, trackedPlayerId]);
   const singleMatchDerived = useMemo(
-    () => computeDerived(focusedReplay ? [focusedReplay] : []),
-    [focusedReplay]
+    () => computeDerived(focusedReplay ? [focusedReplay] : [], trackedPlayerId),
+    [focusedReplay, trackedPlayerId]
   );
   const viewDerived = statsView === "single" ? singleMatchDerived : derived;
 
@@ -536,27 +599,6 @@ export default function App() {
     }
   }
 
-  function quickDateRange(days) {
-    if (days <= 0) return { startDate: "", endDate: "" };
-    const end = new Date();
-    const start = subDays(end, Math.max(0, days - 1));
-    return {
-      startDate: toInputDate(start),
-      endDate: toInputDate(end),
-    };
-  }
-  function inferLoadQuickPreset(startDate, endDate) {
-    const start = String(startDate || "").trim();
-    const end = String(endDate || "").trim();
-    if (!start && !end) return 7;
-    if (!start || !end) return null;
-    for (const days of [1, 7, 30, 90]) {
-      const r = quickDateRange(days);
-      if (start === r.startDate && end === r.endDate) return days;
-    }
-    return null;
-  }
-
   function applyQuickDaysLoad(days) {
     const range = quickDateRange(days);
     setFilters((prev) => ({
@@ -596,56 +638,33 @@ export default function App() {
     setStatus("Analysis filters reset.");
   }
 
-  const playerKpis = useMemo(() => {
-    const rows = activeRecent || [];
-    if (!rows.length) {
+  const hasTrackedPlayerId = Boolean(normalizeIdentity(trackedPlayerId));
+  const playerIdPrompt = "please fill player id";
+  const playerIdNotFoundPrompt = "player id not found";
+  const trackedPlayerOverview = useMemo(
+    () => computeTrackedPlayerOverview(activeRecent, trackedPlayerId),
+    [activeRecent, trackedPlayerId]
+  );
+  const hasTrackedPlayerMatch = hasTrackedPlayerId && trackedPlayerOverview.matches > 0;
+  const hasUsablePlayerContext = hasLoadedData && hasTrackedPlayerMatch;
+  const playerMetricPrompt = !hasTrackedPlayerId ? playerIdPrompt : (hasTrackedPlayerMatch ? "" : playerIdNotFoundPrompt);
+  useEffect(() => {
+    if (loading) return;
+    if (!stableRecent.length) return;
+    if (hasTrackedPlayerMatch) return;
+    if (!playerPickerCandidates.length) return;
+    setPlayerPickerOpen(true);
+  }, [loading, stableRecent.length, hasTrackedPlayerMatch, playerPickerCandidates.length]);
+  const playerScopedInsights = useMemo(() => {
+    if (!hasTrackedPlayerMatch) {
       return {
-        avgScore: 0,
-        avgGoals: 0,
-        avgAssists: 0,
-        avgSaves: 0,
+        categories: [],
+        impactStats: [],
+        boostBars: [],
+        boostWinLoss: [],
+        byType: [],
       };
     }
-    const avgOf = (metricKey) => {
-      const values = rows
-        .map((row) => findPlayerMetric(row, metricKey, trackedPlayerId))
-        .filter((v) => v !== null);
-      if (!values.length) return 0;
-      return values.reduce((sum, value) => sum + value, 0) / values.length;
-    };
-    return {
-      avgScore: avgOf("score"),
-      avgGoals: avgOf("goals"),
-      avgAssists: avgOf("assists"),
-      avgSaves: avgOf("saves"),
-    };
-  }, [activeRecent, trackedPlayerId]);
-  const trackedRowsCount = useMemo(() => {
-    if (!activeRecent?.length) return 0;
-    if (!trackedPlayerId) return activeRecent.length;
-    return activeRecent.filter((row) => isTrackedRow(row, trackedPlayerId)).length;
-  }, [activeRecent, trackedPlayerId]);
-  const trackedPlayerName = useMemo(() => {
-    if (!trackedPlayerId || !activeRecent?.length) return "";
-    const counts = new Map();
-    for (const row of activeRecent) {
-      if (!isTrackedRow(row, trackedPlayerId)) continue;
-      const matched = findTrackedPlayerInRow(row, trackedPlayerId);
-      const name = String(matched?.name || row?.player_name || "").trim();
-      if (!name) continue;
-      counts.set(name, (counts.get(name) || 0) + 1);
-    }
-    let bestName = "";
-    let bestCount = 0;
-    for (const [name, count] of counts.entries()) {
-      if (count > bestCount) {
-        bestName = name;
-        bestCount = count;
-      }
-    }
-    return bestName;
-  }, [activeRecent, trackedPlayerId]);
-  const playerScopedInsights = useMemo(() => {
     const rows = statsView === "single" ? (focusedReplay ? [focusedReplay] : []) : activeRecent;
     const avgOf = (metricKey, sourceRows = rows) => {
       const values = sourceRows
@@ -654,8 +673,8 @@ export default function App() {
       if (!values.length) return 0;
       return values.reduce((sum, value) => sum + value, 0) / values.length;
     };
-    const winsOnly = rows.filter((r) => r.won);
-    const lossesOnly = rows.filter((r) => !r.won);
+    const winsOnly = rows.filter((r) => didPlayerWin(r, trackedPlayerId));
+    const lossesOnly = rows.filter((r) => !didPlayerWin(r, trackedPlayerId));
     const categories = [
       {
         id: "offense",
@@ -674,7 +693,6 @@ export default function App() {
           { label: "Avg Saves", value: num(avgOf("saves")) },
           { label: "Saves vs Opp", value: signed(avgOf("saves_diff_vs_opponents")) },
           { label: "Save Share Team", value: pct(avgOf("saves_share_team")) },
-          { label: "Pressure Index", value: num(avgOf("pressure_index")) },
         ],
       },
       {
@@ -691,19 +709,17 @@ export default function App() {
         id: "impact",
         label: "Impact",
         metrics: [
-          { label: "Avg Score", value: num(avgOf("score")) },
+          { label: "Tracked Avg Score", value: num(avgOf("score")) },
           { label: "Pressure Index", value: num(avgOf("pressure_index")) },
           { label: "Score vs Opp", value: signed(avgOf("score_diff_vs_opponents")) },
-          { label: "Score vs Others", value: signed(avgOf("score_diff_vs_others")) },
+          { label: "Score vs Lobby Avg", value: signed(avgOf("score_vs_lobby_avg")) },
         ],
       },
       {
         id: "context",
         label: "Context",
         metrics: [
-          { label: "Win Rate", value: pct(rows.length ? winsOnly.length / rows.length : 0) },
           { label: "Goal Share Team", value: pct(avgOf("goals_share_team")) },
-          { label: "Save Share Team", value: pct(avgOf("saves_share_team")) },
           { label: "Assist vs Opp", value: signed(avgOf("assists_diff_vs_opponents")) },
         ],
       },
@@ -713,6 +729,7 @@ export default function App() {
       { key: "goals", label: "Goals" },
       { key: "shots", label: "Shots" },
       { key: "saves", label: "Saves" },
+      { key: "touches", label: "Touches" },
       { key: "big_boosts", label: "Big Boosts" },
       { key: "small_boosts", label: "Small Boosts" },
     ]
@@ -753,34 +770,99 @@ export default function App() {
     const boostBars = [
       { metric: "Big", avg: avgBoostOf("big") },
       { metric: "Small", avg: avgBoostOf("small") },
-      { metric: "Total", avg: avgBoostOf("total") },
     ];
     const boostWinLoss = [
       { metric: "Big", win: avgBoostOf("big", winsOnly), loss: avgBoostOf("big", lossesOnly) },
       { metric: "Small", win: avgBoostOf("small", winsOnly), loss: avgBoostOf("small", lossesOnly) },
     ];
-    return { categories, impactStats, boostBars, boostWinLoss };
-  }, [activeRecent, focusedReplay, statsView, trackedPlayerId]);
-  const scopedCategories = metricsScope === "player" ? playerScopedInsights.categories : viewDerived.categories;
-  const scopedImpactStats = metricsScope === "player" ? playerScopedInsights.impactStats : viewDerived.impactStats;
-  const scopedBoostBars = (metricsScope === "player" ? playerScopedInsights.boostBars : viewDerived.boostBars) || [];
-  const scopedBoostWinLoss = (metricsScope === "player" ? playerScopedInsights.boostWinLoss : viewDerived.boostWinLoss) || [];
+    const byTypeMap = new Map();
+    rows.forEach((row) => {
+      const type = row.match_type || "Unknown";
+      const prev = byTypeMap.get(type) || {
+        type,
+        games: 0,
+        wins: 0,
+        scoreTotal: 0,
+        bigBoostsTotal: 0,
+        smallBoostsTotal: 0,
+      };
+      const score = findPlayerMetric(row, "score", trackedPlayerId);
+      const bigBoosts = findPlayerMetric(row, "big_boosts", trackedPlayerId);
+      const smallBoosts = findPlayerMetric(row, "small_boosts", trackedPlayerId);
+      prev.games += 1;
+      prev.wins += didPlayerWin(row, trackedPlayerId) ? 1 : 0;
+      prev.scoreTotal += Number(score || 0);
+      prev.bigBoostsTotal += Number(bigBoosts || 0);
+      prev.smallBoostsTotal += Number(smallBoosts || 0);
+      byTypeMap.set(type, prev);
+    });
+    const byType = Array.from(byTypeMap.values())
+      .map((v) => ({
+        type: v.type,
+        games: v.games,
+        winRate: v.games ? v.wins / v.games : 0,
+        avgScore: v.games ? v.scoreTotal / v.games : 0,
+        avgBigBoosts: v.games ? v.bigBoostsTotal / v.games : 0,
+        avgSmallBoosts: v.games ? v.smallBoostsTotal / v.games : 0,
+        avgBoostTotal: v.games ? (v.bigBoostsTotal + v.smallBoostsTotal) / v.games : 0,
+      }))
+      .sort((a, b) => b.games - a.games);
+    return { categories, impactStats, boostBars, boostWinLoss, byType };
+  }, [activeRecent, focusedReplay, hasTrackedPlayerMatch, statsView, trackedPlayerId]);
+  const scopedCategories = playerScopedInsights.categories || [];
+  const scopedImpactStats = playerScopedInsights.impactStats || [];
+  const scopedBoostBars = playerScopedInsights.boostBars || [];
+  const scopedBoostWinLoss = playerScopedInsights.boostWinLoss || [];
+  const scopedByType = playerScopedInsights.byType || [];
+  const orderedMates = useMemo(() => sortTableRows(viewDerived.mates || [], matesSort), [matesSort, viewDerived.mates]);
+  const orderedEnemies = useMemo(() => sortTableRows(viewDerived.enemies || [], enemiesSort), [enemiesSort, viewDerived.enemies]);
+  const orderedByType = useMemo(() => sortTableRows(scopedByType || [], groupedTypeSort), [groupedTypeSort, scopedByType]);
+  const renderSortableHeader = (label, col, sortState, setSortState, defaultDir = "asc") => (
+    <th key={col}>
+      <button
+        type="button"
+        className={`table-sort-btn ${sortState.col === col ? "active" : ""}`}
+        aria-label={`Sort by ${label} (${sortState.col === col && sortState.dir === "asc" ? "descending" : "ascending"})`}
+        onClick={() =>
+          setSortState((prev) => {
+            if (prev.col === col) return { col, dir: prev.dir === "asc" ? "desc" : "asc" };
+            return { col, dir: defaultDir };
+          })
+        }
+      >
+        <span className="table-sort-label">{label}</span>
+        <span className={`table-sort-arrow ${sortState.col === col ? "active" : ""}`}>
+          {sortState.col === col ? (sortState.dir === "asc" ? "^" : "v") : "<>"}
+        </span>
+      </button>
+    </th>
+  );
 
-  const cards = [
-    { label: "Replays", value: derived.matches, icon: Activity, scope: "team" },
-    { label: "Win Rate", value: pct(derived.winRate), icon: Trophy, scope: "team" },
-    { label: "Player Avg Score", value: num(playerKpis.avgScore), icon: Gauge, scope: "player", requiresPlayerId: true },
-    { label: "Player Avg Goals", value: num(playerKpis.avgGoals), icon: Radar, scope: "player", requiresPlayerId: true },
-    { label: "Player Avg Assists", value: num(playerKpis.avgAssists), icon: Activity, scope: "player", requiresPlayerId: true },
-    { label: "Player Avg Saves", value: num(playerKpis.avgSaves), icon: Activity, scope: "player", requiresPlayerId: true },
-  ];
+  const cards = buildTopKpiCards({
+    totalMatches: derived.matches,
+    trackedPlayerOverview: {
+      ...trackedPlayerOverview,
+      winRate: trackedPlayerOverview.winRate,
+    },
+    hasTrackedPlayerMatch,
+    playerMetricPrompt,
+    playerIdPrompt,
+  }).map((card) => ({
+    ...card,
+    icon: card.label === "Win Rate" ? Trophy : Activity,
+    playerValue: card.label === "Win Rate" && trackedPlayerOverview.winRate !== null ? pct(trackedPlayerOverview.winRate) : card.playerValue,
+    primaryValue: card.label === "Win Rate" && trackedPlayerOverview.winRate !== null
+      ? pct(trackedPlayerOverview.winRate)
+      : card.primaryValue,
+  }));
   const quickLinks = useMemo(() => buildQuickLinks(analyticsView), [analyticsView]);
+  const mapWinRateRows = useMemo(() => selectMapWinRateChartRows(viewDerived.mapWinBars, 12), [viewDerived.mapWinBars]);
 
   const summary = dashboard.summary || {};
-  const allRecent = useMemo(() => stableRecent.slice(), [stableRecent]);
+  const allRecent = useMemo(() => analysisFilteredRecent.slice(), [analysisFilteredRecent]);
   const filteredRecentTableRows = useMemo(
-    () => filterRecentRows(allRecent, tableSearch, tableResultFilter),
-    [allRecent, tableSearch, tableResultFilter],
+    () => filterRecentRows(allRecent, tableSearch, tableResultFilter, trackedPlayerId),
+    [allRecent, tableSearch, tableResultFilter, trackedPlayerId],
   );
   const sortedRecentTableRows = useMemo(
     () => sortRecentRows(filteredRecentTableRows, recentSort),
@@ -790,7 +872,6 @@ export default function App() {
     () => paginateRecentRows(sortedRecentTableRows, tablePage, maxTableRows),
     [sortedRecentTableRows, tablePage, maxTableRows],
   );
-  const pageSize = tablePagination.pageSize;
   const tableTotalPages = tablePagination.totalPages;
   const tablePageSafe = tablePagination.page;
   const visibleRecentTableRows = tablePagination.rows;
@@ -801,7 +882,245 @@ export default function App() {
     setTablePage(1);
   }, [tableSearch, tableResultFilter, maxTableRows]);
   const tabMeta = TAB_META;
-  const activeTrend = viewDerived.trendByTab?.[timeTab] || [];
+  const activeTrend = useMemo(
+    () => (hasTrackedPlayerId
+      ? buildPlayerTrend(
+        statsView === "single" ? (focusedReplay ? [focusedReplay] : []) : activeRecent,
+        timeTab,
+        trackedPlayerId,
+        findPlayerMetric,
+      )
+      : []),
+    [activeRecent, focusedReplay, hasTrackedPlayerId, statsView, timeTab, trackedPlayerId]
+  );
+  const activeContributionTrend = useMemo(
+    () => (hasTrackedPlayerId
+      ? buildPlayerContributionTrend(
+        statsView === "single" && focusedReplay ? [focusedReplay] : activeRecent,
+        timeTab,
+        trackedPlayerId,
+        findPlayerMetric,
+      )
+      : []),
+    [activeRecent, focusedReplay, hasTrackedPlayerId, statsView, timeTab, trackedPlayerId]
+  );
+  const activeMateTrend = useMemo(
+    () => (hasTrackedPlayerId
+      ? buildMateComparisonTrend(
+        statsView === "single" ? (focusedReplay ? [focusedReplay] : []) : activeRecent,
+        timeTab,
+        trackedPlayerId,
+      )
+      : []),
+    [activeRecent, focusedReplay, hasTrackedPlayerId, statsView, timeTab, trackedPlayerId]
+  );
+  const activeMateContributionTrend = useMemo(
+    () => (hasTrackedPlayerId
+      ? buildMateContributionTrend(
+        statsView === "single" && focusedReplay ? [focusedReplay] : activeRecent,
+        timeTab,
+        trackedPlayerId,
+      )
+      : []),
+    [activeRecent, focusedReplay, hasTrackedPlayerId, statsView, timeTab, trackedPlayerId]
+  );
+  const activeTrendWithRegression = useMemo(() => {
+    const winRateTrend = buildRegressionSeries(activeTrend, "winRate", "winRateRegression");
+    const scoreTrend = buildRegressionSeries(winRateTrend, "avgScore", "avgScoreRegression");
+    return buildRegressionSeries(scoreTrend, "scoreGap", "scoreGapRegression");
+  }, [activeTrend]);
+  const overviewScoreTrendData = useMemo(() => {
+    const mateMap = new Map((activeMateTrend || []).map((row) => [row.bucket, row]));
+    return (activeTrendWithRegression || []).map((row) => ({
+      ...row,
+      mateAvgScore: mateMap.get(row.bucket)?.mateAvgScore ?? null,
+      mateScoreGap: mateMap.get(row.bucket)?.mateScoreGap ?? null,
+    }));
+  }, [activeMateTrend, activeTrendWithRegression]);
+  const overviewContributionTrendData = useMemo(() => {
+    const mateMap = new Map((activeMateContributionTrend || []).map((row) => [row.bucket, row]));
+    return (activeContributionTrend || []).map((row) => ({
+      ...row,
+      mateTotal: mateMap.get(row.bucket)?.mateTotal ?? null,
+    }));
+  }, [activeContributionTrend, activeMateContributionTrend]);
+  const mateMetricAverage = (sourceRows, metricKey) => {
+    const values = (sourceRows || [])
+      .map((row) => {
+        const perspective = resolvePerspective(row, trackedPlayerId);
+        if (!perspective?.selectedPlayer) return null;
+        const selectedPid = String(perspective.selectedPlayer?.player_id || "").trim();
+        const selectedOid = String(perspective.selectedPlayer?.online_id || "").trim();
+        const selectedName = String(perspective.selectedPlayer?.name || "").trim();
+        const mates = (perspective.teamPlayers || []).filter((player) => {
+          if (!player) return false;
+          if (selectedPid && String(player?.player_id || "").trim() === selectedPid) return false;
+          if (selectedOid && String(player?.online_id || "").trim() === selectedOid) return false;
+          if (selectedName && String(player?.name || "").trim() === selectedName) return false;
+          return true;
+        });
+        if (!mates.length) return null;
+        const numbers = mates.map((mate) => Number(mate?.[metricKey])).filter((value) => Number.isFinite(value));
+        if (!numbers.length) return null;
+        return numbers.reduce((sum, value) => sum + value, 0) / numbers.length;
+      })
+      .filter((value) => value !== null);
+    if (!values.length) return null;
+    return values.reduce((sum, value) => sum + Number(value), 0) / values.length;
+  };
+  const mateBoostBars = useMemo(() => ([
+    { metric: "Big", avg: mateMetricAverage(statsView === "single" ? [] : activeRecent, "big_boosts") },
+    { metric: "Small", avg: mateMetricAverage(statsView === "single" ? [] : activeRecent, "small_boosts") },
+  ]), [activeRecent, statsView, trackedPlayerId]);
+  const boostBarsData = useMemo(() => {
+    const mateMap = new Map((mateBoostBars || []).map((row) => [row.metric, row.avg]));
+    return (scopedBoostBars || []).map((row) => ({
+      ...row,
+      mateAvg: mateMap.get(row.metric) ?? null,
+    }));
+  }, [mateBoostBars, scopedBoostBars]);
+  const mateBoostWinLoss = useMemo(() => ([
+    {
+      metric: "Big",
+      win: mateMetricAverage((statsView === "single" ? [] : activeRecent).filter((row) => didPlayerWin(row, trackedPlayerId)), "big_boosts"),
+      loss: mateMetricAverage((statsView === "single" ? [] : activeRecent).filter((row) => !didPlayerWin(row, trackedPlayerId)), "big_boosts"),
+    },
+    {
+      metric: "Small",
+      win: mateMetricAverage((statsView === "single" ? [] : activeRecent).filter((row) => didPlayerWin(row, trackedPlayerId)), "small_boosts"),
+      loss: mateMetricAverage((statsView === "single" ? [] : activeRecent).filter((row) => !didPlayerWin(row, trackedPlayerId)), "small_boosts"),
+    },
+  ]), [activeRecent, statsView, trackedPlayerId]);
+  const boostWinLossData = useMemo(() => {
+    const mateMap = new Map((mateBoostWinLoss || []).map((row) => [row.metric, row]));
+    return (scopedBoostWinLoss || []).map((row) => ({
+      ...row,
+      mateWin: mateMap.get(row.metric)?.win ?? null,
+      mateLoss: mateMap.get(row.metric)?.loss ?? null,
+    }));
+  }, [mateBoostWinLoss, scopedBoostWinLoss]);
+  const boostSummary = useMemo(() => {
+    const playerBig = scopedBoostBars.find((row) => row.metric === "Big")?.avg ?? null;
+    const playerSmall = scopedBoostBars.find((row) => row.metric === "Small")?.avg ?? null;
+    const mateBig = mateBoostBars.find((row) => row.metric === "Big")?.avg ?? null;
+    const mateSmall = mateBoostBars.find((row) => row.metric === "Small")?.avg ?? null;
+    return {
+      playerSlurp: slurpIndicator(playerBig, playerSmall),
+      mateSlurp: slurpIndicator(mateBig, mateSmall),
+      playerBigShare:
+        Number.isFinite(Number(playerBig)) && Number.isFinite(Number(playerSmall)) && Number(playerBig) + Number(playerSmall) > 0
+          ? Number(playerBig) / (Number(playerBig) + Number(playerSmall))
+          : null,
+    };
+  }, [mateBoostBars, scopedBoostBars]);
+  const comparisonMetricAverage = (sourceRows, metricKey, side) => {
+    const values = (sourceRows || [])
+      .map((row) => {
+        const perspective = resolvePerspective(row, trackedPlayerId);
+        if (!perspective?.selectedPlayer) return null;
+        const selectedPid = String(perspective.selectedPlayer?.player_id || "").trim();
+        const selectedOid = String(perspective.selectedPlayer?.online_id || "").trim();
+        const selectedName = String(perspective.selectedPlayer?.name || "").trim();
+        const roster = side === "mates"
+          ? (perspective.teamPlayers || []).filter((player) => {
+              if (!player) return false;
+              if (selectedPid && String(player?.player_id || "").trim() === selectedPid) return false;
+              if (selectedOid && String(player?.online_id || "").trim() === selectedOid) return false;
+              if (selectedName && String(player?.name || "").trim() === selectedName) return false;
+              return true;
+            })
+          : (perspective.opponentPlayers || []);
+        if (!roster.length) return null;
+        const numbers = roster.map((player) => Number(player?.[metricKey])).filter((value) => Number.isFinite(value));
+        if (!numbers.length) return null;
+        return numbers.reduce((sum, value) => sum + value, 0) / numbers.length;
+      })
+      .filter((value) => value !== null);
+    if (!values.length) return null;
+    return values.reduce((sum, value) => sum + Number(value), 0) / values.length;
+  };
+  const spiderChartData = useMemo(() => {
+    if (!hasTrackedPlayerMatch) return [];
+    const rows = statsView === "single" ? (focusedReplay ? [focusedReplay] : []) : activeRecent;
+    const metrics = [
+      { axis: "Score", key: "score" },
+      { axis: "Goals", key: "goals" },
+      { axis: "Assists", key: "assists" },
+      { axis: "Saves", key: "saves" },
+      { axis: "Shots", key: "shots" },
+      { axis: "Big Boosts", key: "big_boosts" },
+    ];
+    return metrics.map((metric) => {
+      const playerRaw = rows
+        .map((row) => findPlayerMetric(row, metric.key, trackedPlayerId))
+        .filter((value) => value !== null);
+      const playerAvg = playerRaw.length
+        ? playerRaw.reduce((sum, value) => sum + Number(value), 0) / playerRaw.length
+        : null;
+      const mateAvg = comparisonMetricAverage(rows, metric.key, "mates");
+      const enemyAvg = comparisonMetricAverage(rows, metric.key, "enemies");
+      const maxValue = Math.max(
+        Number(playerAvg || 0),
+        Number(mateAvg || 0),
+        Number(enemyAvg || 0),
+        1,
+      );
+      return {
+        axis: metric.axis,
+        player: playerAvg === null ? 0 : (Number(playerAvg) / maxValue) * 100,
+        mates: mateAvg === null ? 0 : (Number(mateAvg) / maxValue) * 100,
+        enemies: enemyAvg === null ? 0 : (Number(enemyAvg) / maxValue) * 100,
+        playerRaw: playerAvg,
+        matesRaw: mateAvg,
+        enemiesRaw: enemyAvg,
+      };
+    });
+  }, [activeRecent, focusedReplay, hasTrackedPlayerMatch, statsView, trackedPlayerId]);
+  const singleMatchPlayers = useMemo(() => {
+    if (statsView !== "single" || !focusedReplay) return [];
+    const bluePlayers = Array.isArray(focusedReplay?.blue_players) ? focusedReplay.blue_players : [];
+    const orangePlayers = Array.isArray(focusedReplay?.orange_players) ? focusedReplay.orange_players : [];
+    const blueScore = Number(focusedReplay?.blue_score);
+    const orangeScore = Number(focusedReplay?.orange_score);
+    const roster = [
+      ...bluePlayers.map((player) => ({ ...player, teamColor: "blue" })),
+      ...orangePlayers.map((player) => ({ ...player, teamColor: "orange" })),
+    ];
+    const withIdentity = roster.filter((player) => String(player?.name || "").trim());
+    if (!withIdentity.length) return [];
+    const lobbyAvgScore = withIdentity.reduce((sum, player) => sum + Number(player?.score || 0), 0) / withIdentity.length;
+    return withIdentity
+      .map((player) => {
+        const score = Number(player?.score || 0);
+        const goals = Number(player?.goals || 0);
+        const assists = Number(player?.assists || 0);
+        const saves = Number(player?.saves || 0);
+        const shots = Number(player?.shots || 0);
+        const bigBoosts = Number(player?.big_boosts || 0);
+        const smallBoosts = Number(player?.small_boosts || 0);
+        const teamWon = player.teamColor === "blue" ? blueScore > orangeScore : orangeScore > blueScore;
+        return {
+          name: player.name,
+          teamColor: player.teamColor,
+          score,
+          goals,
+          assists,
+          saves,
+          shots,
+          bigBoosts,
+          smallBoosts,
+          boostTotal: bigBoosts + smallBoosts,
+          slurpIndicator: slurpIndicator(bigBoosts, smallBoosts),
+          scoreGap: score - lobbyAvgScore,
+          contributionTotal: goals + assists + saves,
+          won: teamWon ? 1 : 0,
+        };
+      })
+      .sort((a, b) => {
+        if (a.teamColor !== b.teamColor) return a.teamColor === "blue" ? -1 : 1;
+        return b.score - a.score;
+      });
+  }, [focusedReplay, statsView]);
   const trendTickFormatter = (bucket) => {
     if (timeTab === "hour") {
       const text = String(bucket || "");
@@ -809,7 +1128,12 @@ export default function App() {
     }
     return String(bucket || "");
   };
+  const singleMatchTickFormatter = (name) => {
+    const text = String(name || "");
+    return text.length > 14 ? `${text.slice(0, 12)}..` : text;
+  };
   const shouldShowAnalytics = (...groups) => analyticsView === "all" || groups.includes(analyticsView);
+  const supportsMateOverlay = statsView !== "single" && ["overview", "boost", "all"].includes(analyticsView);
   const timeAggregate = useMemo(() => {
     const rows = (activeTrend || []).filter((r) => Number(r?.games || 0) > 0);
     if (!rows.length) {
@@ -848,36 +1172,47 @@ export default function App() {
     };
   }, [activeTrend]);
   const activeTimeMeta = tabMeta[timeTab] || tabMeta.day;
+  const overviewChartHeight = timeTab === "hour" ? 150 : 260;
+  const boostChartSyncId = "boost-sync";
+  const overviewChartSyncId = "overview-sync";
+  const orderedTimeTabs = ["hour", "hour_of_day", "day", "week", "month"];
   const statsInfoSections = [
     {
-      title: "Player KPIs (Player scope)",
-      scope: "Player",
+      title: "Top KPI Cards",
+      scope: "Dynamic",
       items: cards.map((card) => ({
         name: card.label,
-        value: String(card.value),
-        desc: METRIC_DOCS[card.label] || "Derived metric.",
+        value: card.showDual
+          ? `Team: ${card.teamValue} | Player: ${card.playerValue || card.playerEmpty || "-"}`
+          : card.primaryValue,
+        desc: kpiDoc(card.label) || METRIC_DOCS[card.label] || "Derived metric.",
       })),
     },
     {
-      title: `Feature Categories (${metricsScope === "player" ? "Player" : "Team"} scope)`,
-      scope: metricsScope === "player" ? "Player" : "Team",
+      title: "Feature Categories (Player scope)",
+      scope: "Player",
       items: (scopedCategories || []).flatMap((cat) =>
         (cat.metrics || []).map((metric) => ({
           name: `${cat.label} - ${metric.label}`,
           value: String(metric.value || "-"),
-          desc: `${METRIC_DOCS[metric.label] || "Category metric derived from scoped replays."} Category: ${cat.label}.`,
+          desc: `${CATEGORY_DOCS[cat.label] || `Category: ${cat.label}.`} ${METRIC_DOCS[metric.label] || "Category metric derived from scoped replays."}`,
         })),
       ),
     },
     {
-      title: `Boost Metrics (${metricsScope === "player" ? "Player" : "Team"} scope)`,
-      scope: metricsScope === "player" ? "Player" : "Team",
+      title: "Boost Metrics (Player scope)",
+      scope: "Player",
       items: [
         ...(scopedBoostBars || []).map((row) => ({
           name: `Boost Avg - ${row.metric}`,
           value: num(row.avg, 2),
-          desc: `${METRIC_DOCS[`Avg ${row.metric} Boosts`] || METRIC_DOCS["Avg Total Boost"]} Uses all scoped matches.`,
+          desc: `${METRIC_DOCS[`Avg ${row.metric} Boosts`] || "Boost average."} Uses all scoped matches.`,
         })),
+        {
+          name: "Slurping Indicator",
+          value: boostSummary.playerSlurp === null ? "-" : num(boostSummary.playerSlurp, 2),
+          desc: METRIC_DOCS["Slurping Indicator"] || "Avg Small Boosts / Avg Big Boosts. Higher means more small-pad heavy boost routing.",
+        },
         ...(scopedBoostWinLoss || []).flatMap((row) => ([
           {
             name: `Boost Win Avg - ${row.metric}`,
@@ -894,7 +1229,7 @@ export default function App() {
     },
     {
       title: "Impactful Stats",
-      scope: metricsScope === "player" ? "Player" : "Team",
+      scope: "Player",
       items: (scopedImpactStats || []).map((row) => ({
         name: `${row.label} Delta`,
         value: signed(row.delta),
@@ -908,17 +1243,17 @@ export default function App() {
         {
           name: `${activeTimeMeta.short} Win Trend`,
           value: `${activeTrend.length} buckets`,
-          desc: `${METRIC_DOCS["Win Trend"]} Bucket format: ${activeTimeMeta.tip}`,
+          desc: `${METRIC_DOCS["Win Trend"]} Bucket format: ${activeTimeMeta.tip} Uses tracked-player replay rows for the time series.`,
         },
         {
-          name: `Latest ${activeTimeMeta.short} Avg Score`,
+          name: `Latest ${activeTimeMeta.short} Tracked Avg Score`,
           value: activeTrend.length ? num(activeTrend[activeTrend.length - 1]?.avgScore || 0) : "-",
-          desc: `${METRIC_DOCS["Score Momentum"]} Value shown here is the latest bucket's avgScore.`,
+          desc: `${METRIC_DOCS["Score Momentum"]} Value shown here is the latest bucket's tracked-player avgScore.`,
         },
         {
-          name: `Latest ${activeTimeMeta.short} Score Diff`,
-          value: activeTrend.length ? signed(activeTrend[activeTrend.length - 1]?.scoreDiff || 0) : "-",
-          desc: `${METRIC_DOCS["Score Diff Trend"]} Value shown here is the latest bucket's scoreDiff.`,
+          name: `Latest ${activeTimeMeta.short} Score vs Lobby Avg`,
+          value: activeTrend.length ? signed(activeTrend[activeTrend.length - 1]?.scoreGap || 0) : "-",
+          desc: `${METRIC_DOCS["Score vs Lobby Avg Trend"]} Value shown here is the latest bucket's tracked-player score gap versus lobby average.`,
         },
         {
           name: "Weighted Win Rate",
@@ -926,7 +1261,7 @@ export default function App() {
           desc: METRIC_DOCS["Weighted Win Rate"],
         },
         {
-          name: "Weighted Avg Score",
+          name: "Weighted Tracked Avg Score",
           value: num(timeAggregate.weightedScore),
           desc: METRIC_DOCS["Weighted Avg Score"],
         },
@@ -972,6 +1307,11 @@ export default function App() {
           desc: METRIC_DOCS["Win Rate by Team Color"],
         },
         {
+          name: "Win Rate by Map",
+          value: `${(viewDerived.mapWinBars || []).length} maps`,
+          desc: `${METRIC_DOCS["Win Rate by Map"]} (${(viewDerived.mapWinBars || []).slice(0, 5).map((m) => `${m.map}:${pct(m.winRate)}`).join(" | ") || "no data"}).`,
+        },
+        {
           name: "Match Duration Distribution",
           value: `${(viewDerived.durationBuckets || []).reduce((sum, d) => sum + Number(d.games || 0), 0)} games`,
           desc: METRIC_DOCS["Match Duration Distribution"],
@@ -989,18 +1329,18 @@ export default function App() {
       ],
     },
     {
-      title: "Synergy Metrics",
+      title: "Players Comparison Metrics",
       scope: "Team",
       items: [
-        {
-          name: "Mates Synergy",
-          value: `${(viewDerived.mateBars || []).length} mates`,
-          desc: METRIC_DOCS["Mates Synergy"],
-        },
         {
           name: "Best Mates",
           value: `${(viewDerived.mates || []).length} rows`,
           desc: METRIC_DOCS["Best Mates"],
+        },
+        {
+          name: "Enemies",
+          value: `${(viewDerived.enemies || []).length} rows`,
+          desc: METRIC_DOCS["Enemies"],
         },
       ],
     },
@@ -1143,7 +1483,7 @@ export default function App() {
           startupFilters.startDate = range.startDate;
           startupFilters.endDate = range.endDate;
         }
-        setLoadQuickPreset(inferLoadQuickPreset(startupFilters.startDate, startupFilters.endDate));
+      setLoadQuickPreset(inferQuickPreset(startupFilters.startDate, startupFilters.endDate));
         setFilters(startupFilters);
 
         const detectParams = {
@@ -1173,57 +1513,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function renderRecentCell(r, colId) {
-    const duration = Number(r.duration_seconds || 0);
-    const mm = Math.floor(duration / 60);
-    const ss = duration % 60;
-    const renderPlayers = (detailPlayers, fallbackNames) => {
-      const roster = normalizePlayerRoster(detailPlayers, fallbackNames);
-      if (!roster.length) return "-";
-      const nodes = [];
-      roster.forEach((player, idx) => {
-        const points = Number(player?.score);
-        const hasPoints = Number.isFinite(points);
-        nodes.push(
-          <span key={`${player.name}-${idx}`} className="player-cell">
-            <span>{hasPoints ? `${player.name} (${num(points, 0)})` : player.name}</span>
-            <span className="platform-pill" title={platformTitle(player)}>
-              {player.code}
-            </span>
-          </span>,
-        );
-        if (idx < roster.length - 1) {
-          nodes.push(<span key={`sep-${idx}`}>, </span>);
-        }
-      });
-      return <span>{nodes}</span>;
-    };
-    switch (colId) {
-      case "date":
-        return format(parseISO(r.date), "yyyy-MM-dd");
-      case "map":
-        return r.map_name || "-";
-      case "type":
-        return r.match_type || "-";
-      case "mode":
-        return r.game_mode || "-";
-      case "result":
-        return <span className={`pill ${r.won ? "win" : "loss"}`}>{r.won ? "Win" : "Loss"}</span>;
-      case "scoreline":
-        return `${num(r.team_score, 0)} - ${num(r.opponent_score, 0)}`;
-      case "duration":
-        return `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
-      case "team_players":
-        return renderPlayers(r.team_players, r.team_player_names);
-      case "opponents":
-        return renderPlayers(r.opponent_players, r.opponent_player_names);
-      case "replay":
-        return <span className="mono">{r.id}</span>;
-      default:
-        return "-";
-    }
-  }
-
   function handleRecentRowClick(replayId) {
     const id = String(replayId || "").trim();
     if (!id) return;
@@ -1232,17 +1521,13 @@ export default function App() {
       ? selectedReplayIds.filter((rid) => rid !== id)
       : [...selectedReplayIds, id];
     setSelectedReplayIds(next);
-    if (!exists) {
-      setFocusedReplayId(id);
+    if (next.length === 1) {
+      setFocusedReplayId(next[0]);
       setStatsView("single");
       return;
     }
-    if (focusedReplayId === id) {
-      setFocusedReplayId(next[0] || "");
-      if (!next.length && statsView === "single") {
-        setStatsView("aggregate");
-      }
-    }
+    setFocusedReplayId(next[0] || "");
+    setStatsView("aggregate");
   }
 
   const statusPinned = topStatusPinned || scrollY <= 8;
@@ -1253,7 +1538,7 @@ export default function App() {
     <div className="page">
       <div className="aurora aurora-a" />
       <div className="aurora aurora-b" />
-      <main className={`shell ${hasLoadedData ? "with-side-panels" : "loading-only"}`}>
+      <main className={`shell ${hasUsablePlayerContext ? "with-side-panels" : "loading-only"}`}>
         <header className="hero" ref={heroRef}>
           <div className="hero-top">
             {showTopStatus && statusPinned && (
@@ -1309,11 +1594,20 @@ export default function App() {
                 <Github size={14} />
                 GitHub
               </a>
+              <a
+                className="hero-btn ghost"
+                href="https://buymeacoffee.com/alois_devlp"
+                target="_blank"
+                rel="noreferrer"
+                title="Tip if you like it"
+              >
+                ☕ Tip if you like it!
+              </a>
             </div>
           </div>
           <p className="eyebrow">Rocket League Command Center</p>
           <h1>Replay Intelligence</h1>
-          <p>Custom paths, username highlight, me-vs-others metrics, and export-ready analytics.</p>
+          <p>Custom paths, username highlight, player-benchmark metrics, and export-ready analytics.</p>
         </header>
         {showTopStatus && !statusPinned && (
           <div
@@ -1345,33 +1639,43 @@ export default function App() {
               <article className="card" key={c.label}>
                 <div className="card-top">
                   <c.icon size={16} />
-                  <span>{c.label}</span>
-                  <span
-                    className={`metric-scope-pill ${c.scope === "player" ? "player" : "team"}`}
-                    title={
-                      c.scope === "player"
-                        ? "Player metric: uses selected player stats only."
-                        : "Team metric: uses current replay selection aggregate."
-                    }
-                  >
-                    {c.scope === "player" ? "Player" : "Team"}
-                  </span>
+                  <span title={kpiDoc(c.label) || undefined}>{c.label}</span>
                 </div>
-                <strong>{c.requiresPlayerId && !trackedPlayerId ? "" : c.value}</strong>
+                {c.showDual ? (
+                  <div className="card-scope-grid">
+                    <div className="card-scope-row">
+                      <span className="metric-scope-pill team" title="Team metric: aggregated from the active replay selection.">Team</span>
+                      <strong>{c.teamValue}</strong>
+                    </div>
+                    <div className="card-scope-row">
+                      <span className="metric-scope-pill player" title="Player metric: tracked-player value using the current Player ID.">Player</span>
+                      <strong>{c.playerValue || c.playerEmpty || "-"}</strong>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="card-single-value">
+                    <strong>{c.primaryValue}</strong>
+                  </div>
+                )}
               </article>
             ))}
-            <p className="scope-note">KPI cards include team overview + player metrics (player metrics require a Player ID).</p>
+            <p className="scope-note">{KPI_MARKDOWN_DOCS["Display rule"] || "KPI cards only split into team/player when the tracked-player value actually differs."}</p>
             <section className="global-nav">
               <div className="global-nav-title">Player</div>
               <label className="global-player-id">
                 <span>Player ID <Tip text={"Your platform/player identifier used to select your row from each replay.\nHow to find it:\n1) Open Rocket League and load any recent replay in this dashboard.\n2) Open the generated replay JSON from the cache folder.\n3) Search your in-game name in PlayerStats.\n4) Copy OnlineID (or PlayerID.fields.Uid) and paste it here."} /></span>
                 <input value={filters.playerId} onChange={(e) => setFilters({ ...filters, playerId: e.target.value })} />
               </label>
-              {trackedPlayerId && (
-                <p className="scope-note">
-                  {`Tracking player ID: ${filters.playerId || "-"}${trackedPlayerName ? ` -> ${trackedPlayerName}` : ""} (${trackedRowsCount}/${activeRecent.length || 0} replay rows matched).`}
-                </p>
-              )}
+              <PlayerTrackingCallout activeRecent={activeRecent} trackedPlayerId={trackedPlayerId} playerIdValue={filters.playerId} />
+              <button
+                type="button"
+                className="mini-btn ghost player-picker-launch"
+                onClick={() => setPlayerPickerOpen(true)}
+                disabled={!playerPickerCandidates.length}
+                title="Pick your player id from detected players in the loaded replay set."
+              >
+                Pick your player ID
+              </button>
               <div className="global-nav-title">Quick Access</div>
               <div className="global-nav-links">
                 {quickLinks.map((item) => (
@@ -1425,8 +1729,8 @@ export default function App() {
                   <label className="field-load-start">Load start date <Tip text="Replay scan lower bound used when loading/parsing from disk." /><input type="date" value={filters.startDate} onChange={(e) => { setFilters({ ...filters, startDate: e.target.value }); }} /></label>
                   <label className="field-load-end">Load end date <Tip text="Replay scan upper bound used when loading/parsing from disk." /><input type="date" value={filters.endDate} onChange={(e) => { setFilters({ ...filters, endDate: e.target.value }); }} /></label>
                   <label className="field-workers">Parse workers <Tip text="Number of parallel replay parsers. Higher is faster but uses more CPU/RAM." /><input type="number" min="1" max="16" value={filters.workers} onChange={(e) => setFilters({ ...filters, workers: clampInt(e.target.value, 1, 16, 4) })} /></label>
-                  <label className="field-replay-count">Replay count <Tip text="If > 0, parse only the newest N replays. If 0, parse all detected replays." /><input type="number" min="0" max="2000" value={filters.parseCount} onChange={(e) => setFilters({ ...filters, parseCount: clampInt(e.target.value, 0, 2000, 40) })} /></label>
-                  <label className="path-field field-demos">Demos directory <span className="required-mark">*</span>
+                  <label className="field-replay-count">Replay count <Tip text="If this is greater than 0, only the newest N replays are parsed. Set it to 0 to parse every detected replay in the date range." /><input type="number" min="0" max="2000" placeholder="0 = all" title="0 means parse all detected replays." value={filters.parseCount} onChange={(e) => setFilters({ ...filters, parseCount: clampInt(e.target.value, 0, 2000, 40) })} /></label>
+                  <label className="path-field field-demos">Demos directory <Tip text="Rocket League replay folder. The backend auto-detects both the normal Documents path and common OneDrive-redirected Documents paths, but you can override it here." /> <span className="required-mark">*</span>
                     <div className="input-row">
                       <input required aria-required="true" value={filters.demosDir} onChange={(e) => setFilters({ ...filters, demosDir: e.target.value })} />
                       <button type="button" className="mini-btn" onClick={browseDemosDir}>Browse</button>
@@ -1589,201 +1893,56 @@ export default function App() {
           </section>
         </section>
 
-        <section id="recent-matches" className="panel">
-          <div className="panel-title"><Activity size={18} /> Recent Matches <Tip text="Replay table used for search, sorting, and selecting matches for single-match analysis." /></div>
-          <div className="quick-row">
-            <button type="button" className="mini-btn ghost" onClick={() => setRecentFullColumns((v) => !v)} title="Toggle between compact truncated cells and full multi-line table cells.">
-              {recentFullColumns ? "Truncate columns" : "Full column text"}
-            </button>
-            <button
-              type="button"
-              className="mini-btn ghost"
-              title="Clear selected rows and return to aggregate stats view."
-              onClick={() => {
-                setSelectedReplayIds([]);
-                setFocusedReplayId("");
-                setStatsView("aggregate");
-              }}
-              disabled={!selectedReplayIds.length}
-            >
-              Clear selection
-            </button>
-            <span>Selected for analysis: {selectedReplayIds.length ? selectedReplayIds.length : "All"}</span>
-            <span>Click a row to open single match analysis.</span>
-          </div>
-          <div className="recent-table-filters">
-            <label className="recent-search">
-              <span>Search matches</span>
-              <input
-                placeholder="Replay id, map, players..."
-                value={tableSearch}
-                title="Filter rows by replay id, map, mode, and player names."
-                onChange={(e) => setTableSearch(e.target.value)}
-              />
-            </label>
-            <select value={tableResultFilter} title="Filter table rows by result outcome." onChange={(e) => setTableResultFilter(e.target.value)}>
-              <option value="all">All results</option>
-              <option value="win">Wins</option>
-              <option value="loss">Losses</option>
-            </select>
-            <button
-              type="button"
-              className="mini-btn ghost"
-              title="Reset search text and result filter."
-              onClick={() => {
-                setTableSearch("");
-                setTableResultFilter("all");
-              }}
-            >
-              Reset table filters
-            </button>
-          </div>
-          <div className="platform-legend" aria-label="Platform legend">
-            {PLATFORM_LEGEND.map((entry) => (
-              <span key={`legend-${entry.code}`} className="platform-legend-item">
-                <span className="platform-pill" title={entry.label}>{entry.code}</span>
-                <span>{entry.label}</span>
-              </span>
-            ))}
-          </div>
-          <details className="failure-details" style={{ marginTop: 8 }}>
-            <summary>Choose columns</summary>
-            <div className="impact-chips">
-              {RECENT_COLUMN_DEFS.map((col) => {
-                const checked = visibleRecentColumns.includes(col.id);
-                return (
-                  <label key={col.id} className="impact-chip">
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() =>
-                          setVisibleRecentColumns((prev) => {
-                            if (checked) {
-                              const next = prev.filter((id) => id !== col.id);
-                              return next.length ? next : prev;
-                            }
-                            return [...prev, col.id];
-                          })
-                        }
-                      />
-                      <span>{col.label}</span>
-                    </div>
-                  </label>
-                );
-              })}
+        {hasLoadedData && !hasTrackedPlayerMatch && (
+          <section className="panel player-id-gate">
+            <div className="panel-title">
+              <Info size={18} /> Player ID Required
             </div>
-          </details>
-          <div className={`table-wrap ${recentFullColumns ? "table-full-cols" : ""}`}>
-            <table>
-              <thead>
-                <tr>
-                  {RECENT_COLUMN_DEFS.filter((c) => visibleRecentColumns.includes(c.id)).map((c) => (
-                    <th key={`h-${c.id}`}>
-                      <button
-                        type="button"
-                        className={`table-sort-btn ${recentSort.col === c.id ? "active" : ""}`}
-                        aria-label={`Sort by ${c.label} (${recentSort.col === c.id && recentSort.dir === "asc" ? "descending" : "ascending"})`}
-                        onClick={() =>
-                          setRecentSort((prev) => {
-                            if (prev.col === c.id) {
-                              return { col: c.id, dir: prev.dir === "asc" ? "desc" : "asc" };
-                            }
-                            return { col: c.id, dir: c.id === "date" ? "desc" : "asc" };
-                          })
-                        }
-                      >
-                        <span className="table-sort-label">{c.label}</span>
-                        <span className={`table-sort-arrow ${recentSort.col === c.id ? "active" : ""}`}>
-                          {recentSort.col === c.id ? (recentSort.dir === "asc" ? "▲" : "▼") : "↕"}
-                        </span>
-                      </button>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRecentTableRows.map((r) => {
-                  const selected = selectedReplayIds.includes(r.id);
-                  const rowTracked = isTrackedRow(r, trackedPlayerId);
-                  return (
-                    <tr
-                      key={r.id}
-                      className={`${rowTracked ? "row-highlight " : ""}${selected ? "row-selected" : ""}`}
-                      onClick={() => handleRecentRowClick(r.id)}
-                    >
-                      {RECENT_COLUMN_DEFS.filter((c) => visibleRecentColumns.includes(c.id)).map((c) => (
-                        <td key={`${r.id}-${c.id}`}>{renderRecentCell(r, c.id)}</td>
-                      ))}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div className="recent-table-footer">
-            <span>Rows shown: {visibleRecentTableRows.length}/{sortedRecentTableRows.length}</span>
-            <label className="recent-table-max-rows">
-              <span>Max table rows</span>
-              <input
-                type="number"
-                min="1"
-                max="5000"
-                value={maxTableRows}
-                title="Maximum number of rows rendered in the table."
-                onChange={(e) => setMaxTableRows(clampInt(e.target.value, 1, 5000, 5))}
-              />
-            </label>
-            <div className="recent-pagination">
+            <p className="status">
+              {!hasTrackedPlayerId
+                ? "Analytics stay locked until you fill a player ID."
+                : "Analytics stay locked until the current player ID matches at least one loaded replay row."}
+            </p>
+            <div className="config-actions-row">
               <button
                 type="button"
-                className="mini-btn ghost"
-                disabled={tablePageSafe <= 1}
-                onClick={() => setTablePage((p) => Math.max(1, p - 1))}
+                className="mini-btn"
+                onClick={() => setPlayerPickerOpen(true)}
+                disabled={!playerPickerCandidates.length}
+                title="Pick your player id from detected players in the loaded replay set."
               >
-                Prev
-              </button>
-              <span>Page {tablePageSafe}/{tableTotalPages}</span>
-              <button
-                type="button"
-                className="mini-btn ghost"
-                disabled={tablePageSafe >= tableTotalPages}
-                onClick={() => setTablePage((p) => Math.min(tableTotalPages, p + 1))}
-              >
-                Next
+                Pick your player ID
               </button>
             </div>
-          </div>
-        </section>
+          </section>
+        )}
 
-        <section className="panel">
-          <div className="panel-title"><Filter size={18} /> Stats View <Tip text="Switch between aggregate analytics and a focused single-match breakdown from selected table rows." /></div>
-          <div className="tabs-row">
-            <button
-              type="button"
-              className={`tab-btn ${statsView === "aggregate" ? "active" : ""}`}
-              title="Aggregate across the current analysis filter scope."
-              onClick={() => setStatsView("aggregate")}
-            >
-              Aggregate stats
-            </button>
-            <button
-              type="button"
-              className={`tab-btn ${statsView === "single" ? "active" : ""}`}
-              title="Focus analytics on one selected replay."
-              onClick={() => setStatsView("single")}
-            >
-              Single match analysis
-            </button>
-          </div>
-          <p className="status">
-            {statsView === "single"
-              ? (focusedReplay
-                  ? `Single replay selected: ${focusedReplay.id} (${focusedReplay.player_name || "Unknown player"}).`
-                  : "Select a replay row in Recent Matches to analyze one match.")
-              : "Aggregate stats use current analysis filters and selected replay scope."}
-          </p>
-        </section>
+        <RecentMatchesSection
+              selectedReplayIds={selectedReplayIds}
+          setSelectedReplayIds={setSelectedReplayIds}
+          setFocusedReplayId={setFocusedReplayId}
+          setStatsView={setStatsView}
+          tableSearch={tableSearch}
+          setTableSearch={setTableSearch}
+          tableResultFilter={tableResultFilter}
+          setTableResultFilter={setTableResultFilter}
+          visibleRecentColumns={visibleRecentColumns}
+          setVisibleRecentColumns={setVisibleRecentColumns}
+          recentSort={recentSort}
+          setRecentSort={setRecentSort}
+          visibleRecentTableRows={visibleRecentTableRows}
+          trackedPlayerId={trackedPlayerId}
+          isTrackedRow={isTrackedRow}
+          handleRecentRowClick={handleRecentRowClick}
+          maxTableRows={maxTableRows}
+          setMaxTableRows={setMaxTableRows}
+          clampInt={clampInt}
+          sortedRecentTableRows={sortedRecentTableRows}
+          tablePageSafe={tablePageSafe}
+          tableTotalPages={tableTotalPages}
+          setTablePage={setTablePage}
+          PLATFORM_LEGEND={PLATFORM_LEGEND}
+        />
 
         {statsView === "aggregate" && (
         <section className="panel analysis-panel floating-analysis">
@@ -1825,7 +1984,10 @@ export default function App() {
           <div className="filter-menu-block">
             <div className="filter-menu-label">Time view</div>
             <div className="tabs-row">
-              {Object.entries(tabMeta).map(([key, meta]) => (
+              {orderedTimeTabs.map((key) => {
+                const meta = tabMeta[key];
+                if (!meta) return null;
+                return (
                 <button
                   type="button"
                   key={key}
@@ -1836,7 +1998,8 @@ export default function App() {
                 >
                   {meta.short}
                 </button>
-              ))}
+                );
+              })}
             </div>
           </div>
           <div className="quick-row analysis-quick-row">
@@ -1883,202 +2046,377 @@ export default function App() {
             {analyticsView === "all"
               ? "All graph groups are visible."
               : `Focused view: ${ANALYTICS_VIEW_DEFS.find((entry) => entry.id === analyticsView)?.label || "Overview"}.`}
-            {" "}Most charts below use team metrics unless marked otherwise.
+            {statsView === "single"
+              ? " Single-match view compares all players in the selected replay."
+              : " Player metrics are the default. Mates overlay only appears on comparable charts."}
           </p>
-        </section>
-        <section className="chart-grid">
-          {shouldShowAnalytics("overview") && (
-          <article id="stats-categories" className="panel chart-panel tabs-panel">
-            <div className="panel-title"><Filter size={18} /> Feature Categories <span className={`metric-scope-pill ${metricsScope === "player" ? "player" : "team"}`} title={metricsScope === "player" ? "Player metric: values are computed from the selected player fields per replay." : "Team metric: values are computed from team stats in each replay."}>{metricsScope === "player" ? "Player" : "Team"}</span> <Tip text="Category rollup of offense, defense, teamplay, impact, and context metrics." /></div>
-            <div className="scope-switch-row">
-              <button type="button" className={`mini-btn ghost ${metricsScope === "team" ? "active" : ""}`} onClick={() => setMetricsScope("team")}>Team</button>
-              <button type="button" className={`mini-btn ghost ${metricsScope === "player" ? "active" : ""}`} onClick={() => setMetricsScope("player")}>Player</button>
+          {supportsMateOverlay && (
+            <div className="analysis-overlay-row">
+              <div className="analysis-overlay-copy">
+                <div className="filter-menu-label">Comparison overlay</div>
+                <p>Draw teammate averages on comparable player charts.</p>
+              </div>
+              <button
+                type="button"
+                className={`mini-btn ghost analysis-overlay-toggle ${showMateComparison ? "active" : ""}`}
+                onClick={() => setShowMateComparison((value) => !value)}
+                aria-pressed={showMateComparison}
+                title="Toggle teammate average overlays on supported charts."
+              >
+                {showMateComparison ? "Hide mates overlay" : "Show mates overlay"}
+              </button>
             </div>
-            <div className="impact-chips">
-              {(scopedCategories || []).map((cat) => (
-                <div key={cat.id} className="impact-chip">
-                  <div>{cat.label}</div>
-                  <strong>{cat.metrics?.[0]?.value || "-"}</strong>
-                  <span>
-                    {(cat.metrics || [])
-                      .slice(1)
-                      .map((m) => `${m.label}: ${m.value}`)
-                      .join(" | ")}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </article>
           )}
+        </section>
+        <section className={`chart-grid ${timeTab === "hour" ? "timeline-expanded" : ""}`}>
           {shouldShowAnalytics("boost") && (
           <article id="boost-metrics" className="panel chart-panel tabs-panel">
-            <div className="panel-title"><Gauge size={18} /> Boost Metrics <span className={`metric-scope-pill ${metricsScope === "player" ? "player" : "team"}`} title={metricsScope === "player" ? "Player metric: boost stats for the tracked player in each replay." : "Team metric: totals/averages across the selected team in each replay."}>{metricsScope === "player" ? "Player" : "Team"}</span> <Tip text="Compares average big/small/total boost and win-vs-loss boost behavior." /></div>
-            <div className="chart">
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={scopedBoostBars}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
-                  <XAxis dataKey="metric" tick={{ fill: chartTick, fontSize: 11 }} />
-                  <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
-                  <Tooltip formatter={(value) => num(value, 2)} />
-                  <Bar dataKey="avg" fill="#f59e0b" radius={[6, 6, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="chart">
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={scopedBoostWinLoss}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
-                  <XAxis dataKey="metric" tick={{ fill: chartTick, fontSize: 11 }} />
-                  <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
-                  <Tooltip formatter={(value) => num(value, 2)} />
-                  <Bar dataKey="win" fill="#22c55e" radius={[6, 6, 0, 0]} />
-                  <Bar dataKey="loss" fill="#fb7185" radius={[6, 6, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </article>
-          )}
-          {shouldShowAnalytics("overview") && (
-          <article id="win-trend" className="panel chart-panel">
-            <div className="panel-title"><CalendarRange size={18} /> {tabMeta[timeTab].label} Win Trend <Tip text="Win-rate trajectory for the currently selected time bucket granularity." /></div>
-            <div className="chart">
-              <ResponsiveContainer width="100%" height={260}>
-                <LineChart data={activeTrend}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
-                  <XAxis dataKey="bucket" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={trendTickFormatter} />
-                  <YAxis tick={{ fill: chartTick, fontSize: 11 }} domain={[0, 1]} />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="winRate" stroke="#4ade80" strokeWidth={3} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </article>
-          )}
-          {shouldShowAnalytics("overview") && (
-          <article id="time-aggregate" className="panel chart-panel">
-            <div className="panel-title"><Gauge size={18} /> {tabMeta[timeTab].label} Aggregate Insights <Tip text="Weighted summary cards for best/worst/busiest periods and overall weighted performance." /></div>
-            <div className="impact-chips">
-              <div className="impact-chip">
-                <div>Weighted Win Rate</div>
-                <strong>{pct(timeAggregate.weightedWinRate)}</strong>
-                <span>Across {timeAggregate.buckets} {tabMeta[timeTab].short.toLowerCase()} buckets</span>
-              </div>
-              <div className="impact-chip">
-                <div>Weighted Avg Score</div>
-                <strong>{num(timeAggregate.weightedScore)}</strong>
-                <span>Uses games-per-bucket weighting</span>
-              </div>
-              <div className="impact-chip">
-                <div>Avg Games / Bucket</div>
-                <strong>{num(timeAggregate.gamesPerBucket, 2)}</strong>
-                <span>Current filters + date range only</span>
-              </div>
-              <div className="impact-chip">
-                <div>Best {tabMeta[timeTab].short}</div>
-                <strong>{timeAggregate.bestBucket?.bucket || "-"}</strong>
-                <span>{timeAggregate.bestBucket ? `${pct(timeAggregate.bestBucket.winRate)} | ${timeAggregate.bestBucket.games} games` : "No data"}</span>
-              </div>
-              <div className="impact-chip">
-                <div>Worst {tabMeta[timeTab].short}</div>
-                <strong>{timeAggregate.worstBucket?.bucket || "-"}</strong>
-                <span>{timeAggregate.worstBucket ? `${pct(timeAggregate.worstBucket.winRate)} | ${timeAggregate.worstBucket.games} games` : "No data"}</span>
-              </div>
-              <div className="impact-chip">
-                <div>Busiest {tabMeta[timeTab].short}</div>
-                <strong>{timeAggregate.busiestBucket?.bucket || "-"}</strong>
-                <span>{timeAggregate.busiestBucket ? `${timeAggregate.busiestBucket.games} games | score ${num(timeAggregate.busiestBucket.avgScore)}` : "No data"}</span>
-              </div>
-            </div>
-          </article>
-          )}
-          {shouldShowAnalytics("overview") && (
-          <article id="score-momentum" className="panel chart-panel">
-            <div className="panel-title"><Gauge size={18} /> {tabMeta[timeTab].label} Score Momentum <Tip text="Average score over time, showing upward/downward momentum by the selected time view." /></div>
-            <div className="chart">
-              <ResponsiveContainer width="100%" height={260}>
-                <AreaChart data={activeTrend}>
-                  <defs>
-                    <linearGradient id="scoreFill" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.55} />
-                      <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.05} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
-                  <XAxis dataKey="bucket" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={trendTickFormatter} />
-                  <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
-                  <Tooltip />
-                  <Area type="monotone" dataKey="avgScore" stroke="#f59e0b" fill="url(#scoreFill)" strokeWidth={2.5} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </article>
-          )}
-          {shouldShowAnalytics("overview") && (
-          <article id="score-diff" className="panel chart-panel">
-            <div className="panel-title"><Radar size={18} /> {tabMeta[timeTab].label} Score Diff vs Others <Tip text="How far above or below the lobby average your score is in each period." /></div>
-            <div className="chart">
-              <ResponsiveContainer width="100%" height={260}>
-                <LineChart data={activeTrend}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
-                  <XAxis dataKey="bucket" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={trendTickFormatter} />
-                  <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="scoreDiff" stroke="#38bdf8" strokeWidth={3} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </article>
-          )}
-          {shouldShowAnalytics("other") && (
-          <article id="impactful-stats" className="panel chart-panel tabs-panel">
-            <div className="panel-title"><Gauge size={18} /> Impactful Stats (Concise) <span className={`metric-scope-pill ${metricsScope === "player" ? "player" : "team"}`} title={metricsScope === "player" ? "Player metric: compares selected player averages in wins versus losses." : "Team metric: compares team averages in wins versus losses."}>{metricsScope === "player" ? "Player" : "Team"}</span> <Tip text="Top metrics with the largest average difference between wins and losses." /></div>
-            <div className="impact-chips">
-              {scopedImpactStats.slice(0, 6).map((m) => (
-                <div key={m.label} className="impact-chip">
-                  <div>{m.label}</div>
-                  <strong>{signed(m.delta)}</strong>
-                  <span>W {num(m.winAvg)} | L {num(m.lossAvg)}</span>
+            <div className="panel-title"><Gauge size={18} /> {statsView === "single" ? "Single Match Boost Metrics" : "Boost Metrics"} <span className="metric-scope-pill player" title={statsView === "single" ? "Single match view: each bar is one player from the selected replay." : "Player metric: boost stats for the tracked player in each replay."}>{statsView === "single" ? "All players" : "Player"}</span> <Tip text={statsView === "single" ? "Selected replay only. Compares every player's big/small boost usage and slurping ratio." : "Compares player boost usage. Turn on `Show mates overlay` to compare against teammate averages."} /></div>
+            {statsView === "single" ? (!focusedReplay || !singleMatchPlayers.length ? (
+              <p className="failure-empty">Select a replay row to compare every player in one match.</p>
+            ) : (
+              <>
+                <div className="chart">
+                  <ResponsiveContainer width="100%" height={250}>
+                    <BarChart data={singleMatchPlayers} syncId={boostChartSyncId} syncMethod="index" margin={{ top: 8, right: 8, left: 0, bottom: 24 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                      <XAxis dataKey="name" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={singleMatchTickFormatter} interval={0} angle={-18} textAnchor="end" height={56} />
+                      <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
+                      <Tooltip formatter={(value) => num(value, 2)} />
+                      <Bar dataKey="bigBoosts" name="Big boosts" stackId="boost" radius={[6, 6, 0, 0]}>
+                        {singleMatchPlayers.map((row) => <Cell key={`${row.name}-big`} fill={row.teamColor === "blue" ? "#38bdf8" : "#f97316"} />)}
+                      </Bar>
+                      <Bar dataKey="smallBoosts" name="Small boosts" stackId="boost" fill="#f59e0b" radius={[6, 6, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
-              ))}
-            </div>
+                <div className="chart">
+                  <ResponsiveContainer width="100%" height={250}>
+                    <BarChart data={singleMatchPlayers} syncId={boostChartSyncId} syncMethod="index" margin={{ top: 8, right: 8, left: 0, bottom: 24 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                      <XAxis dataKey="name" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={singleMatchTickFormatter} interval={0} angle={-18} textAnchor="end" height={56} />
+                      <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
+                      <Tooltip formatter={(value) => num(value, 2)} />
+                      <Bar dataKey="slurpIndicator" name="Slurping indicator" radius={[6, 6, 0, 0]}>
+                        {singleMatchPlayers.map((row) => <Cell key={`${row.name}-slurp`} fill={row.teamColor === "blue" ? "#38bdf8" : "#f97316"} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </>
+            )) : !hasTrackedPlayerMatch ? (
+              <p className="failure-empty">{playerMetricPrompt}</p>
+            ) : (
+              <>
+                <div className="chart">
+                  <ResponsiveContainer width="100%" height={250}>
+                    <BarChart data={boostBarsData} syncId={boostChartSyncId} syncMethod="index">
+                      <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                      <XAxis dataKey="metric" tick={{ fill: chartTick, fontSize: 11 }} />
+                      <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
+                      <Tooltip formatter={(value) => num(value, 2)} />
+                      <Bar dataKey="avg" name="Player avg" fill="#f59e0b" radius={[6, 6, 0, 0]} />
+                      {showMateComparison && <Bar dataKey="mateAvg" name="Mate avg" fill="#38bdf8" radius={[6, 6, 0, 0]} />}
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="chart">
+                  <ResponsiveContainer width="100%" height={250}>
+                    <BarChart data={boostWinLossData} syncId={boostChartSyncId} syncMethod="index">
+                      <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                      <XAxis dataKey="metric" tick={{ fill: chartTick, fontSize: 11 }} />
+                      <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
+                      <Tooltip formatter={(value) => num(value, 2)} />
+                      <Bar dataKey="win" name="Player win avg" fill="#22c55e" radius={[6, 6, 0, 0]} />
+                      <Bar dataKey="loss" name="Player loss avg" fill="#fb7185" radius={[6, 6, 0, 0]} />
+                      {showMateComparison && <Bar dataKey="mateWin" name="Mate win avg" fill="#67e8f9" radius={[6, 6, 0, 0]} />}
+                      {showMateComparison && <Bar dataKey="mateLoss" name="Mate loss avg" fill="#fda4af" radius={[6, 6, 0, 0]} />}
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="impact-chips">
+                  <div className="impact-chip">
+                    <div>Slurping Indicator</div>
+                    <strong>{boostSummary.playerSlurp === null ? "-" : num(boostSummary.playerSlurp, 2)}</strong>
+                    <span>{boostSummary.playerBigShare === null ? "No boost ratio data" : `Big boost share: ${pct(boostSummary.playerBigShare)}`}</span>
+                  </div>
+                  {showMateComparison && (
+                    <div className="impact-chip">
+                      <div>Mates Slurping Indicator</div>
+                      <strong>{boostSummary.mateSlurp === null ? "-" : num(boostSummary.mateSlurp, 2)}</strong>
+                      <span>Average teammate small/big boost ratio.</span>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </article>
           )}
-          {shouldShowAnalytics("other") && (
+          {shouldShowAnalytics("overview") && (
+          <article id="win-trend" className="panel chart-panel overview-chart-panel">
+            <div className="panel-title"><CalendarRange size={18} /> {statsView === "single" ? "Single Match Scoreboard" : `${tabMeta[timeTab].label} Win Trend`} <span className="metric-scope-pill player" title={statsView === "single" ? "Single match view: compares every player in the selected replay." : "Player metric: trend uses tracked-player replay rows."}>{statsView === "single" ? "All players" : "Player"}</span> <Tip text={statsView === "single" ? "Selected replay only. Shows each player's score in the chosen match." : "Tracked-player win-rate trajectory for the selected time bucket granularity."} /></div>
+            {statsView === "single" ? (!focusedReplay || !singleMatchPlayers.length ? (
+              <p className="failure-empty">Select a replay row to compare every player in one match.</p>
+            ) : (
+              <div className="chart">
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={singleMatchPlayers} syncId={overviewChartSyncId} syncMethod="index" margin={{ top: 8, right: 8, left: 0, bottom: 24 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                    <XAxis dataKey="name" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={singleMatchTickFormatter} interval={0} angle={-18} textAnchor="end" height={56} />
+                    <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
+                    <Tooltip formatter={(value) => num(value, 2)} />
+                    <Bar dataKey="score" name="Score" radius={[6, 6, 0, 0]}>
+                      {singleMatchPlayers.map((row) => <Cell key={`${row.name}-score`} fill={row.teamColor === "blue" ? "#38bdf8" : "#f97316"} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )) : !hasTrackedPlayerMatch ? (
+              <p className="failure-empty">{playerMetricPrompt}</p>
+            ) : (
+              <div className={`chart ${timeTab === "hour" ? "timeline-chart" : ""}`}>
+                <ResponsiveContainer width="100%" height={overviewChartHeight}>
+                  <LineChart data={activeTrendWithRegression} syncId={overviewChartSyncId} syncMethod="index">
+                    <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                    <XAxis dataKey="bucket" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={trendTickFormatter} />
+                    <YAxis tick={{ fill: chartTick, fontSize: 11 }} domain={[0, 1]} />
+                    <Tooltip />
+                    <Line type="monotone" dataKey="winRate" stroke="#4ade80" strokeWidth={3} dot={false} />
+                    <Line type="monotone" dataKey="winRateRegression" name="Win-rate regression" stroke="#86efac" strokeWidth={2} strokeDasharray="7 5" dot={false} connectNulls />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </article>
+          )}
+          {shouldShowAnalytics("overview") && (
+          <article id="score-momentum" className="panel chart-panel overview-chart-panel">
+            <div className="panel-title"><Gauge size={18} /> {statsView === "single" ? "Single Match Score vs Lobby Avg" : `${tabMeta[timeTab].label} Score Momentum`} <span className="metric-scope-pill player" title={statsView === "single" ? "Single match view: compares every player in the selected replay." : "Player metric: score momentum uses tracked-player score per replay."}>{statsView === "single" ? "All players" : "Player"}</span> {statsView !== "single" && showMateComparison && <span className="metric-scope-pill team" title="Mate comparison overlay: average score of the tracked player's teammates in each bucket.">Mates overlay</span>} <Tip text={statsView === "single" ? "Selected replay only. Shows how far above or below lobby average each player scored." : "Tracked-player average score over time. Turn on `Show mates overlay` to compare against teammate average score."} /></div>
+            {statsView === "single" ? (!focusedReplay || !singleMatchPlayers.length ? (
+              <p className="failure-empty">Select a replay row to compare every player in one match.</p>
+            ) : (
+              <div className="chart">
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={singleMatchPlayers} syncId={overviewChartSyncId} syncMethod="index" margin={{ top: 8, right: 8, left: 0, bottom: 24 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                    <XAxis dataKey="name" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={singleMatchTickFormatter} interval={0} angle={-18} textAnchor="end" height={56} />
+                    <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
+                    <Tooltip formatter={(value) => signed(value)} />
+                    <Bar dataKey="scoreGap" name="Score vs lobby avg" radius={[6, 6, 0, 0]}>
+                      {singleMatchPlayers.map((row) => <Cell key={`${row.name}-gap`} fill={row.teamColor === "blue" ? "#38bdf8" : "#f97316"} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )) : !hasTrackedPlayerMatch ? (
+              <p className="failure-empty">{playerMetricPrompt}</p>
+            ) : (
+              <div className={`chart ${timeTab === "hour" ? "timeline-chart" : ""}`}>
+                <ResponsiveContainer width="100%" height={overviewChartHeight}>
+                  <LineChart data={overviewScoreTrendData} syncId={overviewChartSyncId} syncMethod="index">
+                    <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                    <XAxis dataKey="bucket" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={trendTickFormatter} />
+                    <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
+                    <Tooltip />
+                    <Line type="monotone" dataKey="avgScore" stroke="#f59e0b" strokeWidth={3} dot={false} connectNulls />
+                    <Line type="monotone" dataKey="avgScoreRegression" name="Score regression" stroke="#fde68a" strokeWidth={2} strokeDasharray="7 5" dot={false} connectNulls />
+                    {showMateComparison && <Line type="monotone" dataKey="mateAvgScore" name="Mate avg score" stroke="#38bdf8" strokeWidth={2.5} dot={false} connectNulls />}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </article>
+          )}
+          {shouldShowAnalytics("overview") && (
+          <article id="score-diff" className="panel chart-panel overview-chart-panel">
+            <div className="panel-title"><RadarIcon size={18} /> {statsView === "single" ? "Single Match Win / Loss by Player" : `${tabMeta[timeTab].label} Score vs Lobby Avg`} <span className="metric-scope-pill player" title={statsView === "single" ? "Single match view: compares every player in the selected replay." : "Player metric: compares tracked-player score against the average score of the full lobby in each replay."}>{statsView === "single" ? "All players" : "Player"}</span> {statsView !== "single" && showMateComparison && <span className="metric-scope-pill team" title="Mate comparison overlay: teammate average score versus lobby average.">Mates overlay</span>} <Tip text={statsView === "single" ? "Selected replay only. Shows which players were on the winning side." : "How far above or below the average lobby score the tracked player is in each period. Turn on `Show mates overlay` to compare against teammate average versus lobby average."} /></div>
+            {statsView === "single" ? (!focusedReplay || !singleMatchPlayers.length ? (
+              <p className="failure-empty">Select a replay row to compare every player in one match.</p>
+            ) : (
+              <div className="chart">
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={singleMatchPlayers} syncId={overviewChartSyncId} syncMethod="index" margin={{ top: 8, right: 8, left: 0, bottom: 24 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                    <XAxis dataKey="name" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={singleMatchTickFormatter} interval={0} angle={-18} textAnchor="end" height={56} />
+                    <YAxis tick={{ fill: chartTick, fontSize: 11 }} domain={[0, 1]} />
+                    <Tooltip formatter={(value) => (Number(value) > 0 ? "Win" : "Loss")} />
+                    <Bar dataKey="won" name="Result" radius={[6, 6, 0, 0]}>
+                      {singleMatchPlayers.map((row) => <Cell key={`${row.name}-won`} fill={row.won ? "#22c55e" : "#ef4444"} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )) : !hasTrackedPlayerMatch ? (
+              <p className="failure-empty">{playerMetricPrompt}</p>
+            ) : (
+              <div className={`chart ${timeTab === "hour" ? "timeline-chart" : ""}`}>
+                <ResponsiveContainer width="100%" height={overviewChartHeight}>
+                  <LineChart data={overviewScoreTrendData} syncId={overviewChartSyncId} syncMethod="index">
+                    <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                    <XAxis dataKey="bucket" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={trendTickFormatter} />
+                    <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
+                    <Tooltip />
+                    <Line type="monotone" dataKey="scoreGap" stroke="#38bdf8" strokeWidth={3} dot={false} />
+                    <Line type="monotone" dataKey="scoreGapRegression" name="Score-gap regression" stroke="#93c5fd" strokeWidth={2} strokeDasharray="7 5" dot={false} connectNulls />
+                    {showMateComparison && <Line type="monotone" dataKey="mateScoreGap" name="Mate score vs lobby avg" stroke="#f97316" strokeWidth={2.5} dot={false} connectNulls />}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </article>
+          )}
+          {shouldShowAnalytics("overview") && (
+          <article id="contribution-stack" className="panel chart-panel overview-chart-panel">
+            <div className="panel-title"><Activity size={18} /> {statsView === "single" ? "Single Match Goals / Assists / Saves" : `${tabMeta[timeTab].label} Goals / Assists / Saves`} <span className="metric-scope-pill player" title={statsView === "single" ? "Single match view: compares every player in the selected replay." : "Player metric: tracked-player goals, assists, and saves over the selected time view."}>{statsView === "single" ? "All players" : "Player"}</span> {statsView !== "single" && showMateComparison && <span className="metric-scope-pill team" title="Mate comparison overlay: average teammate goals + assists + saves in each bucket.">Mates overlay</span>} <Tip text={statsView === "single" ? "Selected replay only. Stacked bars compare each player's contributions in the chosen match." : "Stacked contribution chart for the tracked player. Turn on `Show mates overlay` to add average teammate contributions."} /></div>
+            {statsView === "single" ? (!focusedReplay || !singleMatchPlayers.length ? (
+              <p className="failure-empty">Select a replay row to compare every player in one match.</p>
+            ) : (
+              <div className="chart">
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={singleMatchPlayers} syncId={overviewChartSyncId} syncMethod="index" margin={{ top: 8, right: 8, left: 0, bottom: 24 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                    <XAxis dataKey="name" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={singleMatchTickFormatter} interval={0} angle={-18} textAnchor="end" height={56} />
+                    <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
+                    <Tooltip formatter={(value) => num(value, 2)} />
+                    <Bar dataKey="goals" stackId="contrib" fill="#22c55e" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="assists" stackId="contrib" fill="#38bdf8" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="saves" stackId="contrib" fill="#f59e0b" radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )) : !hasTrackedPlayerMatch ? (
+              <p className="failure-empty">{playerMetricPrompt}</p>
+            ) : (
+              <div className={`chart ${timeTab === "hour" ? "timeline-chart" : ""}`}>
+                <ResponsiveContainer width="100%" height={overviewChartHeight}>
+                  <BarChart data={overviewContributionTrendData} syncId={overviewChartSyncId} syncMethod="index">
+                    <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                    <XAxis dataKey="bucket" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={trendTickFormatter} />
+                    <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
+                    <Tooltip formatter={(value) => num(value, 2)} />
+                    <Bar dataKey="goals" stackId="contrib" fill="#22c55e" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="assists" stackId="contrib" fill="#38bdf8" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="saves" stackId="contrib" fill="#f59e0b" radius={[6, 6, 0, 0]} />
+                    {showMateComparison && <Line type="monotone" dataKey="mateTotal" name="Mate total contributions" stroke="#f97316" strokeWidth={2.5} dot={false} connectNulls />}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </article>
+          )}
+          {shouldShowAnalytics("synergy") && (
+          <article id="player-comparison-radar" className="panel chart-panel wide-table-panel">
+            <div className="panel-title"><RadarIcon size={18} /> {statsView === "single" ? "Single Match Player / Mates / Enemies" : "Player / Mates / Enemies Radar"} <span className="metric-scope-pill player" title="Comparison view: tracked player vs teammate average vs opponent average.">Compare</span> <Tip text={statsView === "single" ? "Selected replay only. Normalized spider chart comparing the tracked player against teammate and opponent averages in the chosen match." : "Normalized spider chart comparing the tracked player against teammate and opponent averages over the current analysis scope."} /></div>
+            {!hasTrackedPlayerMatch ? (
+              <p className="failure-empty">{playerMetricPrompt}</p>
+            ) : (
+              <div className="chart radar-chart">
+                <ResponsiveContainer width="100%" height={260}>
+                  <RadarChart data={spiderChartData}>
+                    <PolarGrid stroke={chartGrid} />
+                    <PolarAngleAxis dataKey="axis" tick={{ fill: chartTick, fontSize: 10 }} />
+                    <PolarRadiusAxis tick={false} axisLine={false} domain={[0, 100]} />
+                    <Tooltip
+                      formatter={(value, _name, item) => {
+                        const key = item?.dataKey;
+                        const payload = item?.payload || {};
+                        if (key === "player") return [num(payload.playerRaw, 2), "Player"];
+                        if (key === "mates") return [num(payload.matesRaw, 2), "Mates"];
+                        if (key === "enemies") return [num(payload.enemiesRaw, 2), "Enemies"];
+                        return [num(value, 2), String(key || "")];
+                      }}
+                    />
+                    <Legend verticalAlign="bottom" height={30} />
+                    <RadarSeries name="Player" dataKey="player" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.18} strokeWidth={2.5} />
+                    <RadarSeries name="Mates" dataKey="mates" stroke="#38bdf8" fill="#38bdf8" fillOpacity={0.14} strokeWidth={2.5} />
+                    <RadarSeries name="Enemies" dataKey="enemies" stroke="#f97316" fill="#f97316" fillOpacity={0.1} strokeWidth={2.5} />
+                  </RadarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </article>
+          )}
+          {shouldShowAnalytics("overview") && (
+          <article id="stats-categories" className="panel chart-panel tabs-panel">
+            <div className="panel-title"><Filter size={18} /> Feature Categories <span className="metric-scope-pill player" title="Player metric: values are computed from the tracked player's fields per replay.">Player</span> <Tip text="Category rollup of offense, defense, teamplay, impact, and context metrics for the tracked player." /></div>
+            {!hasTrackedPlayerMatch ? (
+              <p className="failure-empty">{playerMetricPrompt}</p>
+            ) : (
+              <div className="impact-chips">
+                {(scopedCategories || []).map((cat) => (
+                  <div key={cat.id} className="impact-chip">
+                    <div>{cat.label} <Tip text={CATEGORY_DOCS[cat.label] || `Category: ${cat.label}.`} /></div>
+                    <strong>{cat.metrics?.[0]?.value || "-"}</strong>
+                    <span>
+                      {(cat.metrics || [])
+                        .slice(1)
+                        .map((m) => `${m.label}: ${m.value}`)
+                        .join(" | ")}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </article>
+          )}
+          {shouldShowAnalytics("overview") && (
+          <article id="impactful-stats" className="panel chart-panel tabs-panel">
+            <div className="panel-title"><Gauge size={18} /> Impactful Stats (Concise) <span className="metric-scope-pill player" title="Player metric: compares tracked-player averages in wins versus losses.">Player</span> <Tip text="Top player metrics with the largest average difference between wins and losses." /></div>
+            {!hasTrackedPlayerMatch ? (
+              <p className="failure-empty">{playerMetricPrompt}</p>
+            ) : (
+              <div className="impact-chips">
+                {scopedImpactStats.slice(0, 6).map((m) => (
+                  <div key={m.label} className="impact-chip">
+                    <div>{m.label}</div>
+                    <strong>{signed(m.delta)}</strong>
+                    <span>W {num(m.winAvg)} | L {num(m.lossAvg)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </article>
+          )}
+          {shouldShowAnalytics("overview") && (
           <article id="grouped-match-type" className="panel chart-panel tabs-panel">
-            <div className="panel-title"><Filter size={18} /> Grouped by Match Type <span className="metric-scope-pill team" title="Team metric: grouped averages are computed from team stats in each replay.">Team</span> <Tip text="Table view summarizing performance per match type with win rate, score, and boost averages." /></div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Type</th>
-                    <th>Games</th>
-                    <th>Win Rate</th>
-                    <th>Avg Score</th>
-                    <th>Avg Big Boosts</th>
-                    <th>Avg Small Boosts</th>
-                    <th>Avg Total Boost</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {viewDerived.byType.slice(0, 20).map((r) => (
-                    <tr key={r.type}>
-                      <td>{r.type}</td>
-                      <td>{r.games}</td>
-                      <td>{pct(r.winRate)}</td>
-                      <td>{num(r.avgScore)}</td>
-                      <td>{num(r.avgBigBoosts)}</td>
-                      <td>{num(r.avgSmallBoosts)}</td>
-                      <td>{num(r.avgBoostTotal)}</td>
+            <div className="panel-title"><Filter size={18} /> Grouped by Match Type <span className="metric-scope-pill player" title="Player metric: grouped averages are computed from tracked-player stats in each replay.">Player</span> <Tip text="Table view summarizing tracked-player performance per match type with win rate, score, and boost averages." /></div>
+            {!hasTrackedPlayerMatch ? (
+              <p className="failure-empty">{playerMetricPrompt}</p>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      {renderSortableHeader("Type", "type", groupedTypeSort, setGroupedTypeSort)}
+                      {renderSortableHeader("Games", "games", groupedTypeSort, setGroupedTypeSort, "desc")}
+                      {renderSortableHeader("Win Rate", "winRate", groupedTypeSort, setGroupedTypeSort, "desc")}
+                      {renderSortableHeader("Your Avg Score", "avgScore", groupedTypeSort, setGroupedTypeSort, "desc")}
+                      {renderSortableHeader("Avg Big Boosts", "avgBigBoosts", groupedTypeSort, setGroupedTypeSort, "desc")}
+                      {renderSortableHeader("Avg Small Boosts", "avgSmallBoosts", groupedTypeSort, setGroupedTypeSort, "desc")}
+                      {renderSortableHeader("Avg Total Boost", "avgBoostTotal", groupedTypeSort, setGroupedTypeSort, "desc")}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {orderedByType.slice(0, 20).map((r) => (
+                      <tr key={r.type}>
+                        <td>{r.type}</td>
+                        <td>{r.games}</td>
+                        <td>{pct(r.winRate)}</td>
+                        <td>{num(r.avgScore)}</td>
+                        <td>{num(r.avgBigBoosts)}</td>
+                        <td>{num(r.avgSmallBoosts)}</td>
+                        <td>{num(r.avgBoostTotal)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </article>
           )}
           {shouldShowAnalytics("distribution") && (
           <article id="mode-distribution" className="panel chart-panel">
-            <div className="panel-title"><Radar size={18} /> Mode Distribution <Tip text="Distribution of games played by mode under current analysis filters." /></div>
+            <div className="panel-title"><RadarIcon size={18} /> Mode Distribution <Tip text="Distribution of games played by mode under current analysis filters." /></div>
             <div className="chart">
               <ResponsiveContainer width="100%" height={260}>
                 <BarChart data={viewDerived.modeBars}>
@@ -2094,7 +2432,7 @@ export default function App() {
           )}
           {shouldShowAnalytics("distribution") && (
           <article className="panel chart-panel">
-            <div className="panel-title"><Radar size={18} /> Mode Outcomes Split <Tip text="Per mode, split games into wins and losses to compare consistency by queue/mode." /></div>
+            <div className="panel-title"><RadarIcon size={18} /> Mode Outcomes Split <Tip text="Per mode, split games into wins and losses to compare consistency by queue/mode." /></div>
             <div className="chart">
               <ResponsiveContainer width="100%" height={260}>
                 <BarChart data={viewDerived.modeOutcomeBars}>
@@ -2124,6 +2462,51 @@ export default function App() {
                       <Cell key={`color-${entry.color}`} fill={entry.color === "Orange" ? "#f97316" : "#38bdf8"} />
                     ))}
                   </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </article>
+          )}
+          {shouldShowAnalytics("distribution") && (
+          <article className="panel chart-panel wide-table-panel">
+            <div className="panel-title"><Trophy size={18} /> Win Rate by Map <Tip text="Maps ranked by play count, but the primary bar is your win rate on each map. Games played stay as the secondary overlay for context." /></div>
+            <div className="chart">
+              <ResponsiveContainer width="100%" height={400}>
+                <BarChart data={mapWinRateRows} margin={{ top: 24, right: 16, left: 8, bottom: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                  <XAxis
+                    dataKey="map"
+                    tick={{ fill: chartTick, fontSize: 11 }}
+                    tickFormatter={(value) => formatMapAxisLabel(value, 18)}
+                    interval={0}
+                    angle={-18}
+                    textAnchor="end"
+                    height={92}
+                  />
+                  <YAxis yAxisId="left" domain={[0, 100]} tick={{ fill: chartTick, fontSize: 11 }} />
+                  <YAxis yAxisId="right" orientation="right" tick={{ fill: chartTick, fontSize: 11 }} />
+                  <Tooltip
+                    formatter={(value, name) => {
+                      if (name === "Win %") return `${num(value, 2)}%`;
+                      if (name === "Games") return `${value} games`;
+                      return value;
+                    }}
+                    labelFormatter={(label) => {
+                      const row = mapWinRateRows.find((entry) => entry.map === label);
+                      return row ? `${row.map} | ${row.games} games` : label;
+                    }}
+                  />
+                  <Bar yAxisId="left" dataKey={MAP_WINRATE_PRIMARY_KEY} name="Win %" fill="#60a5fa" radius={[6, 6, 0, 0]} />
+                  <Line
+                    yAxisId="right"
+                    type="monotone"
+                    dataKey={MAP_WINRATE_SECONDARY_KEY}
+                    name="Games"
+                    stroke="#f97316"
+                    strokeWidth={2.5}
+                    dot={{ r: 2 }}
+                    label={{ position: "top", fill: chartTick, fontSize: 11 }}
+                  />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -2177,62 +2560,119 @@ export default function App() {
           </article>
           )}
           {shouldShowAnalytics("synergy") && (
-          <article id="mates-synergy" className="panel chart-panel">
-            <div className="panel-title"><Activity size={18} /> Mates Synergy (Top 10) <Tip text="Top teammates by games, with paired win rate to highlight chemistry." /></div>
-            {viewDerived.mateBars.length > 0 ? (
-              <div className="chart">
-                <ResponsiveContainer width="100%" height={260}>
-                  <BarChart data={viewDerived.mateBars}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
-                    <XAxis dataKey="mate" tick={{ fill: chartTick, fontSize: 11 }} interval={0} angle={-22} textAnchor="end" height={70} />
-                    <YAxis yAxisId="left" tick={{ fill: chartTick, fontSize: 11 }} />
-                    <YAxis yAxisId="right" orientation="right" tick={{ fill: chartTick, fontSize: 11 }} domain={[0, 100]} />
-                    <Tooltip />
-                    <Bar yAxisId="left" dataKey="games" fill="#38bdf8" radius={[6, 6, 0, 0]} />
-                    <Bar yAxisId="right" dataKey="winRate" fill="#22c55e" radius={[6, 6, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+          <article id="best-mates" className="panel chart-panel wide-table-panel">
+            <div className="panel-title"><Trophy size={18} /> Best Mates <Tip text="Teammates ordered by games played together first, then by tracked-player average score." /></div>
+            {!hasTrackedPlayerMatch ? (
+              <p className="failure-empty">{playerMetricPrompt}</p>
             ) : (
-              <p className="failure-empty">Mate synergy needs at least 2 games with the same teammate.</p>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      {renderSortableHeader("Mate", "name", matesSort, setMatesSort)}
+                      {renderSortableHeader("Games", "games", matesSort, setMatesSort, "desc")}
+                      {renderSortableHeader("Wins", "wins", matesSort, setMatesSort, "desc")}
+                      {renderSortableHeader("Win Rate", "winRate", matesSort, setMatesSort, "desc")}
+                      {renderSortableHeader("Your Avg Score", "avgScore", matesSort, setMatesSort, "desc")}
+                      {renderSortableHeader("Score vs Mate", "avgScoreDiffVsMate", matesSort, setMatesSort, "desc")}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orderedMates.slice(0, 40).map((m) => (
+                      <tr key={m.name} id={toAnchorId(m.name, "mate")}>
+                        <td>{m.name}</td>
+                        <td>{m.games}</td>
+                        <td>{m.wins}</td>
+                        <td>{pct(m.winRate)}</td>
+                        <td>{num(m.avgScore)}</td>
+                        <td>{signed(m.avgScoreDiffVsMate)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </article>
           )}
           {shouldShowAnalytics("synergy") && (
-          <article id="best-mates" className="panel chart-panel wide-table-panel">
-            <div className="panel-title"><Trophy size={18} /> Best Mates <Tip text="Expanded teammate leaderboard with volume, wins, rate, and score deltas." /></div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Mate</th>
-                    <th>Games</th>
-                    <th>Wins</th>
-                    <th>Win Rate</th>
-                    <th>Avg Score</th>
-                    <th>Score vs Mate</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {viewDerived.mates.slice(0, 40).map((m) => (
-                    <tr key={m.name} id={toAnchorId(m.name, "mate")}>
-                      <td>{m.name}</td>
-                      <td>{m.games}</td>
-                      <td>{m.wins}</td>
-                      <td>{pct(m.winRate)}</td>
-                      <td>{num(m.avgScore)}</td>
-                      <td>{signed(m.avgScoreDiffVsMate)}</td>
+          <article id="enemy-rivals" className="panel chart-panel wide-table-panel">
+            <div className="panel-title"><Trophy size={18} /> Enemies <Tip text="Opponents ordered by games faced first, then by tracked-player average score." /></div>
+            {!hasTrackedPlayerMatch ? (
+              <p className="failure-empty">{playerMetricPrompt}</p>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      {renderSortableHeader("Enemy", "name", enemiesSort, setEnemiesSort)}
+                      {renderSortableHeader("Games", "games", enemiesSort, setEnemiesSort, "desc")}
+                      {renderSortableHeader("Wins", "wins", enemiesSort, setEnemiesSort, "desc")}
+                      {renderSortableHeader("Losses", "losses", enemiesSort, setEnemiesSort, "desc")}
+                      {renderSortableHeader("Win Rate", "winRate", enemiesSort, setEnemiesSort, "desc")}
+                      {renderSortableHeader("Your Avg Score", "avgScore", enemiesSort, setEnemiesSort, "desc")}
+                      {renderSortableHeader("Score vs Opp", "avgScoreDiffVsOpp", enemiesSort, setEnemiesSort, "desc")}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {orderedEnemies.slice(0, 40).map((e) => (
+                      <tr key={`enemy-${e.name}`} id={toAnchorId(e.name, "enemy")}>
+                        <td>{e.name}</td>
+                        <td>{e.games}</td>
+                        <td>{e.wins}</td>
+                        <td>{e.losses}</td>
+                        <td>{pct(e.winRate)}</td>
+                        <td>{num(e.avgScore)}</td>
+                        <td>{signed(e.avgScoreDiffVsOpp)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </article>
           )}
         </section>
+        {shouldShowAnalytics("overview") && (
+        <section className="panel chart-panel overview-summary-panel">
+          <div className="panel-title"><Gauge size={18} /> {tabMeta[timeTab].label} Aggregate Insights <span className="metric-scope-pill player" title="Player metric: aggregate insights summarize the tracked-player time series.">Player</span> <Tip text="Weighted summary cards for the tracked-player timeline: best/worst/busiest periods and overall weighted performance." /></div>
+          <div className="impact-chips">
+            <div className="impact-chip">
+              <div>Weighted Win Rate</div>
+              <strong>{pct(timeAggregate.weightedWinRate)}</strong>
+              <span>Across {timeAggregate.buckets} {tabMeta[timeTab].short.toLowerCase()} buckets</span>
+            </div>
+            <div className="impact-chip">
+              <div>Weighted Tracked Avg Score</div>
+              <strong>{num(timeAggregate.weightedScore)}</strong>
+              <span>Uses games-per-bucket weighting</span>
+            </div>
+            <div className="impact-chip">
+              <div>Avg Games / Bucket</div>
+              <strong>{num(timeAggregate.gamesPerBucket, 2)}</strong>
+              <span>Current filters + date range only</span>
+            </div>
+            <div className="impact-chip">
+              <div>Best {tabMeta[timeTab].short}</div>
+              <strong>{timeAggregate.bestBucket?.bucket || "-"}</strong>
+              <span>{timeAggregate.bestBucket ? `${pct(timeAggregate.bestBucket.winRate)} | ${timeAggregate.bestBucket.games} games` : "No data"}</span>
+            </div>
+            <div className="impact-chip">
+              <div>Worst {tabMeta[timeTab].short}</div>
+              <strong>{timeAggregate.worstBucket?.bucket || "-"}</strong>
+              <span>{timeAggregate.worstBucket ? `${pct(timeAggregate.worstBucket.winRate)} | ${timeAggregate.worstBucket.games} games` : "No data"}</span>
+            </div>
+            <div className="impact-chip">
+              <div>Busiest {tabMeta[timeTab].short}</div>
+              <strong>{timeAggregate.busiestBucket?.bucket || "-"}</strong>
+              <span>{timeAggregate.busiestBucket ? `${timeAggregate.busiestBucket.games} games | score ${num(timeAggregate.busiestBucket.avgScore)}` : "No data"}</span>
+            </div>
+          </div>
+        </section>
+        )}
 
-        <details id="misc-stats" className="panel wtf-dropdown">
-          <summary className="panel-title wtf-summary"><Radar size={18} /> misc ({viewDerived.miscStats.length}) <Tip text="Fun/quirky derived counters from your filtered replay set." /></summary>
+        {shouldShowAnalytics("misc") && (
+        <section id="misc-stats" className="panel chart-panel">
+          <div className="panel-title"><RadarIcon size={18} /> Misc <Tip text="Fun/quirky derived counters from your filtered replay set." /></div>
           <div className="wtf-grid">
             {viewDerived.miscStats.map((s) => (
               <article key={s.label} className="wtf-item" title={s.hint}>
@@ -2242,61 +2682,21 @@ export default function App() {
               </article>
             ))}
           </div>
-        </details>
+        </section>
+        )}
       </main>
-      {statsInfoOpen && (
-        <div
-          className="stats-info-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Stats info"
-          onClick={() => setStatsInfoOpen(false)}
-        >
-          <section className="stats-info-modal panel" onClick={(e) => e.stopPropagation()}>
-            <div className="panel-title">
-              <Info size={18} /> Stats Info
-              <span className="metric-scope-pill team" title="Documentation scope of each section.">Glossary</span>
-            </div>
-            <p className="status">
-              Live glossary for the current view. Each row shows metric name and exact formula/source fields with a sample data extract.
-            </p>
-            <div className="stats-info-tree">
-              {statsInfoTree.map((scopeNode) => (
-                <details key={scopeNode.scope} className="stats-tree-scope" open>
-                  <summary>{scopeNode.scope}</summary>
-                  <div className="stats-tree-body">
-                    {scopeNode.sections.map((section) => (
-                      <details key={`${scopeNode.scope}-${section.title}`} className="stats-tree-section">
-                        <summary>{section.title}</summary>
-                        <div className="stats-tree-body">
-                          {section.groups.map((groupNode) => (
-                            <details key={`${section.title}-${groupNode.group}`} className="stats-tree-group">
-                              <summary>{groupNode.group}</summary>
-                              <div className="stats-info-rows">
-                                {groupNode.metrics.map((metric) => (
-                                  <div key={`${section.title}-${groupNode.group}-${metric.name}`} className="stats-info-row">
-                                    <div className="stats-info-name">{metric.name}</div>
-                                    <div className="stats-info-desc">{metric.desc}</div>
-                                  </div>
-                                ))}
-                              </div>
-                            </details>
-                          ))}
-                        </div>
-                      </details>
-                    ))}
-                  </div>
-                </details>
-              ))}
-            </div>
-            <div className="stats-info-actions">
-              <button type="button" className="mini-btn" onClick={() => setStatsInfoOpen(false)}>
-                Close
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
+      <StatsInfoModal
+        open={statsInfoOpen}
+        onClose={() => setStatsInfoOpen(false)}
+        statsInfoTree={statsInfoTree}
+      />
+      <PlayerIdPickerModal
+        open={playerPickerOpen}
+        onClose={() => setPlayerPickerOpen(false)}
+        players={playerPickerCandidates}
+        currentPlayerId={filters.playerId}
+        onPick={(value) => setFilters((prev) => ({ ...prev, playerId: value }))}
+      />
       {boostTrailEnabled && (
         <div className="boost-trail-layer" aria-hidden="true">
           <div className="boost-fuel-hud">
@@ -2344,3 +2744,4 @@ export default function App() {
     </div>
   );
 }
+

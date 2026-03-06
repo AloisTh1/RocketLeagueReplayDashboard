@@ -2,114 +2,74 @@
 
 <!-- version list -->
 
-## v1.0.0 (2026-03-02)
-
-- Initial Release
-
-## v1.0.13 (2026-03-02)
-
-### Chores
-
-- **security**: Harden local runtime paths, bind host, and parser limits
-  ([`ddda97c`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/ddda97cf58bf01777d83b1cf302c91867b3b80c3))
-
-
-## v1.0.12 (2026-03-02)
-
-### Bug Fixes
-
-- **build**: Make production frontend build deterministic in release scripts
-  ([`71229b1`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/71229b1c1eeb81da0a798580575edcaba081ce41))
-
-
-## v1.0.11 (2026-03-02)
-
-### Chores
-
-- **cache**: Default cache/raw storage to app-local temp folders
-  ([`e3f428d`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/e3f428d54dc74da65bce88c792329a8c2c9be5e0))
-
-
-## v1.0.10 (2026-03-02)
-
-### Bug Fixes
-
-- **frontend**: Make player-id tracking update stats dynamically
-  ([`95c2f82`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/95c2f826eb759e02f525f64cd1f0918f834c341e))
-
-
-## v1.0.9 (2026-03-02)
-
-### Bug Fixes
-
-- **release**: Attach dist archives and exe assets to GitHub releases
-  ([`e9d7a06`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/e9d7a06f3152501e34374ea6807685d31d5ea33e))
-
-
-## v1.0.8 (2026-03-02)
+## v2.0.6 (2026-03-06)
 
 ### Documentation
 
-- Remove local absolute paths from readme links
-  ([`18a4f18`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/18a4f1804afe76576864054e5cbb9584ce825e80))
+- Anonymize sample player placeholders
+  ([`849c38f`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/849c38fc8851c7604a1ac41daf20ec91ad4076f2))
 
 
-## v1.0.7 (2026-03-02)
+## v2.0.5 (2026-03-06)
 
-### Refactoring
+### Documentation
 
-- **frontend**: Split dashboard view logic into feature modules
-  ([`4e0185e`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/4e0185e0bb3b3388917adb66340a54ae6df095e7))
-
-
-## v1.0.6 (2026-03-02)
-
-### Bug Fixes
-
-- **backend**: Serve built frontend and use lifespan startup
-  ([`d07c75b`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/d07c75bf6757d61944071cfdb5a064e4b9beb601))
+- Remove absolute local paths
+  ([`208fbeb`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/208fbeba61cb16439e087d0cd678161c690d2bde))
 
 
-## v1.0.5 (2026-03-02)
+## v2.0.4 (2026-03-06)
 
-### Bug Fixes
+### Documentation
 
-- **ci**: Upload windows exe after release workflow
-  ([`50f7a3a`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/50f7a3aeecb1303af495848cc94ac967dd0f81b3))
-
-
-## v1.0.4 (2026-03-02)
-
-### Build System
-
-- **release**: Bundle boxcars binary when available
-  ([`dd0a5bd`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/dd0a5bdced82914525baed95a2fdb15ae1f828ae))
+- Add dashboard preview image to README
+  ([`0fa237c`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/0fa237c158db90a24535c467c0a23ec46c0c9925))
 
 
-## v1.0.3 (2026-03-02)
+## v2.0.3 (2026-03-06)
+
+### Documentation
+
+- Rewrite README for end users
+  ([`d340bbe`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/d340bbefff1436d9156956f21e465fb1ff8ab1b9))
+
+- Rewrite README structure
+  ([`8a7b0f4`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/8a7b0f4bce71338965fc6cf115256806f372f9bf))
+
+
+## v2.0.2 (2026-03-06)
 
 ### Bug Fixes
 
-- **backend**: Run uvicorn with app object in frozen mode
-  ([`bc80fa3`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/bc80fa34b092cd3a87bbc43a9e3759e07127d7d1))
+- **frontend**: Improve map win rate chart and docs layout
+  ([`9bcd15c`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/9bcd15c024d75783829f25204f31cd1843b65684))
 
 
-## v1.0.2 (2026-03-02)
+## v2.0.1 (2026-03-06)
 
 ### Bug Fixes
 
-- **backend**: Support frozen/script import fallbacks
-  ([`e4928b9`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/e4928b94150ee918456d323d8a8208baf35fa4d4))
+- **frontend**: Show map win rate as primary chart metric
+  ([`15eb4e7`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/15eb4e7cf9ede8dc188dcc1bc873e0e7e450056a))
 
 
-## v1.0.1 (2026-03-02)
+## v2.0.0 (2026-03-06)
 
 ### Continuous Integration
 
-- **release**: Attach Windows exe to GitHub releases
-  ([`00855ff`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/00855ff92d82cf2daf54622d7da5a75ca4c19531))
+- Fix release tag resolution and changelog baseline
+  ([`5a68fc9`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/5a68fc91c1fc87085eb86e4505ebff6225eda0b2))
+
+- Restore semantic-release v1 baseline
+  ([`227ee46`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/227ee46f1e32a97d55cde3faebe7879c7aca6d07))
+
+### Refactoring
+
+- Stabilize dashboard v2 architecture
+  ([`e0e0620`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/e0e0620a2a2e591ffe3e42a0f344ad72acdcd92a))
 
 
 ## v1.0.0 (2026-03-02)
 
-- Initial Release
+- Initial release
+  ([`c2aff04`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/c2aff049f40b7e2128bddda243033ac71e065053))

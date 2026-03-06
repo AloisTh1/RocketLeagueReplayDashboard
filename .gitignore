@@ -1,10 +1,10 @@
-AGENTS.md
-
 # OS / editor
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+*.orig
+*.rej
 
 # Python
 __pycache__/
@@ -16,10 +16,15 @@ __pycache__/
 .uv-cache/
 .pytest_cache/
 .mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # Node / frontend
 frontend/node_modules/
 frontend/dist/
+frontend/.vite/
+frontend/coverage/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -28,7 +33,6 @@ pnpm-debug.log*
 # Build / release artifacts
 dist/
 build/
-*.spec
 *.exe
 
 # Local parser/cache stores
@@ -36,6 +40,12 @@ build/
 tools/parsed_replays/
 tools/raw_replays/
 
+# Local environment
+.env
+.env.*
+
 # Local temp/debug files
 *.log
 .tmp-*.json
+
+temp_local/
