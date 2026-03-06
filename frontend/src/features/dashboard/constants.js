@@ -25,7 +25,7 @@ export const PLATFORM_LEGEND = [
 ];
 
 export const ANALYTICS_VIEW_DEFS = [
-  { id: "overview", label: "Overview", tip: "Core performance graphs: trends, momentum, score deltas, and category summaries." },
+  { id: "overview", label: "Overview", tip: "Core performance graphs: trends, momentum, score deltas, and concise impact summaries." },
   { id: "boost", label: "Boost", tip: "Boost-focused charts: pickup volume and win/loss boost comparison." },
   { id: "distribution", label: "Distribution", tip: "Distribution views: mode mix, team-color win rates, duration and score differential." },
   { id: "synergy", label: "Players Comparison", tip: "Player-relative comparisons: mates, enemies, and roster-based matchup views." },
@@ -34,11 +34,11 @@ export const ANALYTICS_VIEW_DEFS = [
 ];
 
 export const METRIC_DOCS = {
-  Replays: "Formula: Team scope = scopedRows.length. Player scope = count(scopedRows where tracked Player ID is matched in the replay roster). Extract: scopedRows=57, trackedRows=41.",
-  "Win Rate": "Formula: trackedWins / trackedMatches using only rows where the tracked Player ID is matched. Extract: trackedWins=32, trackedMatches=57 -> 56.14%.",
+  Replays: "Formula: scopedRows.length. Always shows the number of replay rows in the current filtered scope. Extract: scopedRows=57 -> 57.",
+  "Win Rate": "Formula: trackedWins / trackedMatches using only rows where the tracked Player ID is matched, with win/loss resolved from the tracked player's actual side in the replay. Extract: trackedWins=32, trackedMatches=57 -> 56.14%.",
   "Avg Goals": "Formula: mean(goals). Team scope -> mean(row.goals). Player scope -> mean(trackedPlayer.goals). Extract: row.goals=7, player.goals=2.",
   "Avg Shots": "Formula: mean(shots). Team scope -> row.shots. Player scope -> trackedPlayer.shots. Extract: row.shots=15, player.shots=6.",
-  "Shot Accuracy": "Formula: mean(goals / shots). Team scope -> row.shot_accuracy. Player scope -> trackedPlayer.goals/trackedPlayer.shots. Extract: goals=3, shots=8 -> 37.50%.",
+  "Goals / Shot": "Formula: mean(goals / shots). Same calculation as shot accuracy, surfaced with a more literal label. Extract: goals=3, shots=8 -> 37.50%.",
   "Avg Centers": "Formula: mean(centers). Team scope -> row.centers. Player scope -> trackedPlayer.centers. Extract: row.centers=4, player.centers=2.",
   "Goals vs Opp": "Formula: mean(goals - opponentGoals). Team scope -> row.goals_diff_vs_opponents. Player scope -> trackedPlayer.goals - sum(opponent.goals). Extract: player.goals=2, oppGoals=4 -> -2.",
   "Avg Saves": "Formula: mean(saves). Team scope -> row.saves. Player scope -> trackedPlayer.saves. Extract: row.saves=5, player.saves=2.",
@@ -90,18 +90,10 @@ export const METRIC_DOCS = {
   Enemies: "Formula: opponent table for the current Player ID, ordered by games desc then avg tracked-player score desc. `Score vs Opp` = mean(trackedPlayer.score - thisEnemy.score) for the named opponent only. Extract: player=848, enemy=1275 -> -427.",
 };
 
-export const CATEGORY_DOCS = {
-  Offense: "Finishing and shot-generation view. Focuses on goals, shots, conversion, and attacking output relative to opponents.",
-  Defense: "Prevention view. Focuses on saves, defensive output versus opponents, and how much of the team's saves are yours.",
-  Teamplay: "Cooperation view. Focuses on assists, score sharing, and performance relative to teammates.",
-  Impact: "Composite influence view. Lead metric is Pressure Index = score*0.01 + goals*2 + assists*1.5 + saves*1.4 + shots*0.7 + demos*0.8. Score-vs fields show how far above or below the comparison group you are.",
-  Context: "Situational view. Keeps only the remaining non-duplicated context metrics: goal share and assist comparison versus opponents.",
-};
-
 export const TAB_META = {
   day: {
-    label: "Day",
-    short: "Day",
+    label: "TL Day",
+    short: "TL Day",
     tip: "Chronological daily buckets over your selected date range.",
   },
   hour: {
@@ -109,19 +101,39 @@ export const TAB_META = {
     short: "Timeline",
     tip: "Continuous timeline with one point per replay, positioned by its real match timestamp.",
   },
+  timeline_hour: {
+    label: "TL Hour",
+    short: "TL Hour",
+    tip: "Chronological hourly buckets over your selected date range.",
+  },
   hour_of_day: {
     label: "Hour",
     short: "Hour",
     tip: "Aggregated by clock hour (00-23) across all selected days.",
   },
-  week: {
+  day_of_week: {
+    label: "Day",
+    short: "Day",
+    tip: "Aggregated by day of week across all selected weeks.",
+  },
+  week_of_year: {
     label: "Week",
     short: "Week",
+    tip: "Aggregated by ISO week number across the selected range.",
+  },
+  month_of_year: {
+    label: "Month",
+    short: "Month",
+    tip: "Aggregated by month of year across all selected years.",
+  },
+  week: {
+    label: "TL Week",
+    short: "TL Week",
     tip: "Chronological weekly buckets over your selected date range.",
   },
   month: {
-    label: "Month",
-    short: "Month",
+    label: "TL Month",
+    short: "TL Month",
     tip: "Chronological monthly buckets over your selected date range.",
   },
 };

@@ -3,17 +3,10 @@ export function buildQuickLinks(analyticsView) {
   const links = [];
   if (show("overview")) {
     links.push(
-      { href: "#stats-categories", label: "Categories" },
       { href: "#win-trend", label: "Trend" },
       { href: "#time-aggregate", label: "Aggregate" },
       { href: "#score-momentum", label: "Momentum" },
       { href: "#score-diff", label: "Score Diff" },
-    );
-  }
-  if (show("other")) {
-    links.push(
-      { href: "#impactful-stats", label: "Impact" },
-      { href: "#grouped-match-type", label: "By Type" },
     );
   }
   if (show("boost")) {
@@ -26,6 +19,12 @@ export function buildQuickLinks(analyticsView) {
     links.push(
       { href: "#mates-synergy", label: "Synergy" },
       { href: "#best-mates", label: "Best Mates" },
+    );
+  }
+  if (show("overview")) {
+    links.push(
+      { href: "#impactful-stats", label: "Impact" },
+      { href: "#grouped-match-type", label: "By Type" },
     );
   }
   links.push({ href: "#recent-matches", label: "Recent" }, { href: "#misc-stats", label: "misc" });

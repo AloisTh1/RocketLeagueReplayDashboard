@@ -435,6 +435,7 @@ def rocket_league_dashboard(
         replay_data, from_cache_flag, error_text = parse_or_cache_replay(
             digest_item,
             boxcars,
+            cancel_event=cancel_event,
             use_cache=use_cache,
             write_cache=write_cache,
             cache_dir=cache_dir,

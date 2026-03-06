@@ -4,6 +4,7 @@ import {
   MAP_WINRATE_PRIMARY_KEY,
   MAP_WINRATE_SECONDARY_KEY,
   formatMapAxisLabel,
+  formatMapCategoryLabel,
   selectMapWinRateChartRows,
 } from "../src/features/dashboard/distribution.js";
 
@@ -27,6 +28,12 @@ test("selectMapWinRateChartRows fails closed on bad input", () => {
 
 test("formatMapAxisLabel truncates long map labels and handles empty values", () => {
   assert.equal(formatMapAxisLabel("DFH_Stadium_P", 18), "DFH_Stadium_P");
-  assert.equal(formatMapAxisLabel("VeryLongRocketLeagueMapName", 10), "VeryLongR…");
+  assert.equal(formatMapAxisLabel("VeryLongRocketLeagueMapName", 10), "VeryLongR...");
   assert.equal(formatMapAxisLabel("", 10), "Unknown");
+});
+
+test("formatMapCategoryLabel appends game counts next to the map label", () => {
+  assert.equal(formatMapCategoryLabel("DFH_Stadium_P", 13, 18), "DFH_Stadium_P (13g)");
+  assert.equal(formatMapCategoryLabel("VeryLongRocketLeagueMapName", 7, 10), "VeryLongR... (7g)");
+  assert.equal(formatMapCategoryLabel("", null, 10), "Unknown (0g)");
 });

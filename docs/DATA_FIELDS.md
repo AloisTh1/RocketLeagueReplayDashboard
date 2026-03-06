@@ -105,7 +105,7 @@ Current canonical replay shape:
   "ranked": true,
   "tournament": false,
   "map_name": "UtopiaStadium_Dusk_P",
-  "replay_name": "2026-03-05.19.00 tracked_player Ranked Doubles Loss",
+  "replay_name": "2026-03-05.19.00 demo_player Ranked Doubles Loss",
   "match_guid": "51EEC32011F118BCF2499BA0A76F5C8B",
   "game_version": "30",
   "build_version": "260114.55864.507183",
@@ -177,9 +177,9 @@ Current canonical replay shape:
 
 ```json
 {
-  "name": "tracked_player",
-  "player_id": "76561190000000001",
-  "online_id": "76561190000000001",
+  "name": "demo_player",
+  "player_id": "demo-player-000001",
+  "online_id": "demo-player-000001",
   "score": 352,
   "goals": 0,
   "assists": 1,
@@ -283,8 +283,6 @@ These fields are totals for the selected side:
 | `clears_diff_vs_opponents` | `clears - opp_clears_total` |
 | `centers_diff_vs_opponents` | `centers - opp_centers_total` |
 | `demos_diff_vs_opponents` | `demos - opp_demos_total` |
-| `big_boosts_diff_vs_others` | `team_big_boosts - opp_big_boosts` |
-| `small_boosts_diff_vs_others` | `team_small_boosts - opp_small_boosts` |
 
 ## KPI Section
 
@@ -293,6 +291,12 @@ Current top KPI cards in the left panel are:
 - `Replays`
 - `Win Rate`
 
+Top-card behavior:
+
+- `Replays` always shows the number of replay rows in the current scope.
+- `Win Rate` is always player-only.
+- If no valid tracked player is available, `Win Rate` shows a prompt instead of a numeric value.
+
 The broader analytics panels are gated behind a valid tracked `Player ID`. The replay table still loads without one.
 
 Source code:
@@ -300,22 +304,21 @@ Source code:
 - [kpis.js](../frontend/src/features/dashboard/kpis.js)
 - [App.jsx](../frontend/src/App.jsx)
 
-### Team KPI Inputs
+### Scope Count Input
 
 | KPI | Frontend source | Meaning |
 | --- | --- | --- |
-| `Replays` | `derived.matches` | Count of currently scoped replay rows. |
+| `Replays` | `derived.matches` | Count of currently scoped replay rows after the active analysis filters. |
 
 `derived` comes from:
 
 - `computeDerived(activeRecent, trackedPlayerId)`
 
-### Player KPI Inputs
+### Tracked Player KPI Inputs
 
 | KPI | Frontend source | Meaning |
 | --- | --- | --- |
-| `Replays` | `trackedPlayerOverview.matches` | Number of scoped rows where the tracked player is matched. |
-| `Win Rate` | `trackedPlayerOverview.winRate` | `tracked wins / tracked matches`. |
+| `Win Rate` | `trackedPlayerOverview.winRate` | `tracked wins / tracked matches`, using the tracked player's actual blue/orange side. |
 
 `trackedPlayerOverview` is currently computed as:
 
@@ -326,16 +329,9 @@ const wins = trackedRows.filter((row) => didPlayerWin(row, trackedPlayerId)).len
 
 ### Important KPI Notes
 
-The top cards only split into `Team / Player` when the values differ.
-
-Exception:
-
-- `Win Rate` is player-only now
-- there is no team-side KPI win-rate card anymore
-
-If both values are identical:
-
-- only one value is shown
+- `Win Rate` never shows a team value.
+- If `Player ID` is empty, player-only KPI content shows `please fill player id`.
+- If `Player ID` is present but matches no replay rows, player-only KPI content shows `player id not found`.
 
 Selection behavior:
 
@@ -345,9 +341,8 @@ Selection behavior:
 
 ### Website KPI Copy
 
-- `Replays`: How many replay rows are currently visible after your active filters. If a valid `Player ID` is set and that player is matched in fewer rows than the current scope, the card can also show the tracked-player replay count for comparison.
-- `Win Rate`: Your tracked player's win rate in the current scope. Computed as tracked-player wins divided by tracked-player matched rows. Requires a valid `Player ID`.
-- `Display rule`: A KPI shows both `Team` and `Player` only when those two values are different. Otherwise it stays as a single value to avoid duplication.
+- `Replays`: Number of replay rows in the current scope after filters.
+- `Win Rate`: Your tracked player's win rate in the current scope. Computed as tracked-player wins divided by tracked-player matched rows, using your actual side in each replay. Requires a valid matched `Player ID`.
 
 ## Full JSON Paths Used By KPI Section
 

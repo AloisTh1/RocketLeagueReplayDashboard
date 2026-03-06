@@ -6,6 +6,7 @@ import math
 import os
 import re
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,7 +38,29 @@ def extract_json_text(stdout: str) -> str:
     raise ValueError("boxcars output did not contain JSON payload")
 
 
-def run_boxcars_json(boxcars_exe: Path, replay_path: Path) -> dict[str, Any]:
+def _boxcars_timeout_seconds(file_size_bytes: int) -> int:
+    size_mb = max(0.0, file_size_bytes / (1024 * 1024))
+    # Larger replays are slower to decode; give them a modest size-based bump.
+    size_bonus = min(75, int(size_mb / 4) * 5)
+    return max(BOXCARS_TIMEOUT_SECONDS, BOXCARS_TIMEOUT_SECONDS + size_bonus)
+
+
+def _is_transient_parse_error(error: str | None) -> bool:
+    text = str(error or "").lower()
+    return "timed out" in text
+
+
+def _is_cancelled_parse_error(error: str | None) -> bool:
+    text = str(error or "").lower()
+    return "cancelled" in text
+
+
+def run_boxcars_json(
+    boxcars_exe: Path,
+    replay_path: Path,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
     try:
         stat = replay_path.stat()
     except OSError as exc:
@@ -54,17 +77,83 @@ def run_boxcars_json(boxcars_exe: Path, replay_path: Path) -> dict[str, Any]:
     cmd = [str(boxcars_exe)]
     call_started = time.perf_counter()
     LOGGER.info("boxcars call started replay=%s cmd=%s", replay_path.name, cmd)
-    try:
-        completed = subprocess.run(
-            cmd,
-            input=payload_bytes,
-            capture_output=True,
-            timeout=BOXCARS_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"boxcars timed out after {BOXCARS_TIMEOUT_SECONDS}s") from exc
-    except OSError as exc:
-        raise RuntimeError(f"boxcars launch failed: {exc}") from exc
+    timeout_seconds = _boxcars_timeout_seconds(stat.st_size)
+    retry_timeout_seconds = max(timeout_seconds + 30, int(timeout_seconds * 1.5))
+    attempts = [timeout_seconds]
+    if retry_timeout_seconds > timeout_seconds:
+        attempts.append(retry_timeout_seconds)
+    completed = None
+    for attempt_index, attempt_timeout in enumerate(attempts, start=1):
+        if cancel_event and cancel_event.is_set():
+            raise RuntimeError(f"boxcars cancelled before launch for {replay_path.name}")
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            result: dict[str, Any] = {}
+            failure: dict[str, BaseException] = {}
+
+            def _communicate() -> None:
+                try:
+                    stdout, stderr_bytes = process.communicate(input=payload_bytes)
+                    result["completed"] = subprocess.CompletedProcess(
+                        cmd,
+                        process.returncode,
+                        stdout=stdout,
+                        stderr=stderr_bytes,
+                    )
+                except BaseException as exc:  # noqa: BLE001
+                    failure["error"] = exc
+
+            worker = threading.Thread(target=_communicate, daemon=True)
+            worker.start()
+            deadline = time.perf_counter() + attempt_timeout
+            while worker.is_alive():
+                if cancel_event and cancel_event.is_set():
+                    process.kill()
+                    worker.join(timeout=2)
+                    raise RuntimeError(f"boxcars cancelled during parse for {replay_path.name}")
+                if time.perf_counter() >= deadline:
+                    process.kill()
+                    worker.join(timeout=2)
+                    raise subprocess.TimeoutExpired(cmd, attempt_timeout)
+                worker.join(timeout=0.25)
+            if "error" in failure:
+                raise failure["error"]
+            completed = result.get("completed")
+            if completed is None:
+                raise RuntimeError("boxcars communicate returned no result")
+            break
+        except TypeError:
+            # Defensive fallback for environments where Popen signature differs.
+            completed = subprocess.run(
+                cmd,
+                input=payload_bytes,
+                capture_output=True,
+                timeout=attempt_timeout,
+            )
+            break
+        except subprocess.TimeoutExpired as exc:
+            if attempt_index < len(attempts):
+                LOGGER.warning(
+                    "boxcars timeout replay=%s size=%sB attempt=%s/%s timeout=%ss; retrying",
+                    replay_path.name,
+                    stat.st_size,
+                    attempt_index,
+                    len(attempts),
+                    attempt_timeout,
+                )
+                continue
+            raise RuntimeError(
+                f"boxcars timed out after {attempt_timeout}s for {replay_path.name} ({stat.st_size} bytes)"
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(f"boxcars launch failed: {exc}") from exc
+    if completed is None:
+        raise RuntimeError("boxcars produced no result")
 
     elapsed = time.perf_counter() - call_started
     stderr = (completed.stderr or b"").decode("utf-8", errors="replace").strip()
@@ -1001,6 +1090,7 @@ def canonicalize_replay(raw: dict[str, Any], replay_id: str, *, file_mtime_ns: i
 def parse_or_cache_replay(
     digest: ReplayDigest,
     boxcars_exe: Path | None,
+    cancel_event: threading.Event | None = None,
     use_cache: bool = True,
     write_cache: bool = True,
     cache_dir: str | None = None,
@@ -1090,13 +1180,16 @@ def parse_or_cache_replay(
                 return cached, True, None
         if cached_error:
             # Reuse cached failure (timeout/invalid parse) to avoid re-running expensive broken replays.
-            return None, True, cached_error
+            if not (_is_transient_parse_error(cached_error) and boxcars_exe is not None):
+                return None, True, cached_error
 
     if boxcars_exe is None:
         return None, False, "boxcars unavailable and replay not found in local cache"
 
     try:
-        raw = run_boxcars_json(boxcars_exe, digest.file_path)
+        if cancel_event and cancel_event.is_set():
+            return None, False, f"parse cancelled before replay start: {digest.file_path.name}"
+        raw = run_boxcars_json(boxcars_exe, digest.file_path, cancel_event=cancel_event)
         if write_cache:
             try:
                 # Keep raw parser output for long-term resilience if canonical parsing changes.
@@ -1117,7 +1210,7 @@ def parse_or_cache_replay(
         return canonical, False, None
     except Exception as exc:  # noqa: BLE001
         error = str(exc)
-        if use_cache and write_cache:
+        if use_cache and write_cache and not _is_transient_parse_error(error) and not _is_cancelled_parse_error(error):
             store_cache(
                 digest,
                 status="failed",
@@ -1160,6 +1253,8 @@ def pick_player(
             if target_name == name or target_name in name:
                 return player
 
+    if target_id or target_name:
+        return None
     return players[0] if players else None
 
 
@@ -1475,24 +1570,14 @@ def build_row(
         "score_diff_vs_others": score - opp_score_total,
         "score_diff_vs_mate": score - team_avg_score,
         "score_diff_vs_opponents": score - opp_score_total,
-        "goals_diff_vs_others": goals - opp_goals_total,
         "goals_diff_vs_opponents": goals - opp_goals_total,
-        "assists_diff_vs_others": assists - opp_assists_total,
         "assists_diff_vs_opponents": assists - opp_assists_total,
-        "saves_diff_vs_others": saves - opp_saves_total,
         "saves_diff_vs_opponents": saves - opp_saves_total,
-        "shots_diff_vs_others": shots - opp_shots_total,
         "shots_diff_vs_opponents": shots - opp_shots_total,
-        "touches_diff_vs_others": touches - opp_touches_total,
         "touches_diff_vs_opponents": touches - opp_touches_total,
-        "clears_diff_vs_others": clears - opp_clears_total,
         "clears_diff_vs_opponents": clears - opp_clears_total,
-        "centers_diff_vs_others": centers - opp_centers_total,
         "centers_diff_vs_opponents": centers - opp_centers_total,
-        "demos_diff_vs_others": demos - opp_demos_total,
         "demos_diff_vs_opponents": demos - opp_demos_total,
-        "big_boosts_diff_vs_others": team_big_boosts_total - opp_big_boosts_total,
-        "small_boosts_diff_vs_others": team_small_boosts_total - opp_small_boosts_total,
     }
 
 

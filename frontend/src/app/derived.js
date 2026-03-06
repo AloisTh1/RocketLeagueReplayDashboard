@@ -1,5 +1,5 @@
 import { format, parseISO } from "date-fns";
-import { num, pct, signed } from "./utils/formatters";
+import { num } from "./utils/formatters";
 import { didPlayerWin, findPlayerMetric, findTrackedPlayerInRow, normalizeIdentity, resolvePerspective, samePlayer } from "../features/dashboard/playerTracking";
 
 export function computeDerived(filteredRecent, trackedPlayerId = "") {
@@ -50,6 +50,51 @@ const avg = (k) => {
 };
 
 const ordered = rows.slice().sort((a, b) => new Date(a.date) - new Date(b.date));
+const daysPlayedMap = new Map();
+rows.forEach((r) => {
+  const dateValue = String(r?.date || "");
+  if (!dateValue) return;
+  const dayKey = format(parseISO(dateValue), "yyyy-MM-dd");
+  const current = daysPlayedMap.get(dayKey) || {
+    count: 0,
+    matchTypes: {
+      ranked: 0,
+      tournament: 0,
+      casual: 0,
+      other: 0,
+    },
+  };
+  current.count += 1;
+  const rawType = String(r?.match_type || "").trim().toLowerCase();
+  if (rawType === "ranked") current.matchTypes.ranked += 1;
+  else if (rawType === "tournament") current.matchTypes.tournament += 1;
+  else if (rawType === "casual") current.matchTypes.casual += 1;
+  else current.matchTypes.other += 1;
+  daysPlayedMap.set(dayKey, current);
+});
+const playedDayKeys = Array.from(daysPlayedMap.keys()).sort();
+const daysPlayedHeatmap = (() => {
+  if (!playedDayKeys.length) return { cells: [], maxCount: 0, playedDays: 0 };
+  const endDate = new Date(`${playedDayKeys[playedDayKeys.length - 1]}T00:00:00`);
+  const cells = [];
+  for (let offset = 41; offset >= 0; offset -= 1) {
+    const cellDate = new Date(endDate);
+    cellDate.setDate(endDate.getDate() - offset);
+    const key = format(cellDate, "yyyy-MM-dd");
+    cells.push({
+      key,
+      label: format(cellDate, "MMM d"),
+      longLabel: format(cellDate, "EEE, MMM d, yyyy"),
+      count: Number(daysPlayedMap.get(key)?.count || 0),
+      matchTypes: daysPlayedMap.get(key)?.matchTypes || { ranked: 0, tournament: 0, casual: 0, other: 0 },
+    });
+  }
+  return {
+    cells,
+    maxCount: Math.max(...cells.map((cell) => cell.count), 0),
+    playedDays: playedDayKeys.length,
+  };
+})();
 
 const modeMap = new Map();
 const modeOutcomeMap = new Map();
@@ -430,6 +475,11 @@ const miscStats = [
     hint: "Games with 7+ saves.",
   },
   {
+    label: "Longest Heater",
+    value: maxWinStreak,
+    hint: "Longest consecutive win streak.",
+  },
+  {
     label: "Longest Doom Streak",
     value: maxLossStreak,
     hint: "Longest consecutive loss streak.",
@@ -448,11 +498,6 @@ const miscStats = [
     label: "Score Abyss",
     value: valleyGame ? `${num(valleyGame.score)} (${valleyGame.id})` : "-",
     hint: "Lowest score game in filtered matches.",
-  },
-  {
-    label: "Longest Heater",
-    value: maxWinStreak,
-    hint: "Longest consecutive win streak.",
   },
   {
     label: "Mood Swing",
@@ -534,155 +579,12 @@ const miscStats = [
     value: bestWindow ? `${(bestWindow.rate * 100).toFixed(2)}% (${bestWindow.start.id} -> ${bestWindow.end.id})` : "-",
     hint: "Highest win rate observed in any 5-game sequence.",
   },
-].slice(0, 7);
-
-const avgIn = (list, key) => {
-  if (!list.length) return 0;
-  if (key === "big_boosts") return list.reduce((sum, r) => sum + boostParts(r).big, 0) / list.length;
-  if (key === "small_boosts") return list.reduce((sum, r) => sum + boostParts(r).small, 0) / list.length;
-  if (key === "boost_total") return list.reduce((sum, r) => sum + boostParts(r).total, 0) / list.length;
-  return list.reduce((sum, r) => sum + safeNum(r?.[key]), 0) / list.length;
-};
-const winsOnly = rows.filter((r) => r.won);
-const lossesOnly = rows.filter((r) => !r.won);
-const impactStats = [
-  { key: "score", label: "Score" },
-  { key: "goals", label: "Goals" },
-  { key: "shots", label: "Shots" },
-  { key: "saves", label: "Saves" },
-  { key: "touches", label: "Touches" },
-  { key: "big_boosts", label: "Big Boosts" },
-  { key: "small_boosts", label: "Small Boosts" },
-]
-  .map((m) => {
-    const winAvg = avgIn(winsOnly, m.key);
-    const lossAvg = avgIn(lossesOnly, m.key);
-    return {
-      label: m.label,
-      winAvg,
-      lossAvg,
-      delta: winAvg - lossAvg,
-    };
-  })
-  .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
-
-const byTypeMap = new Map();
-rows.forEach((r) => {
-  const type = r.match_type || "Unknown";
-  const prev = byTypeMap.get(type) || {
-    type,
-    games: 0,
-    wins: 0,
-    scoreTotal: 0,
-    bigBoostsTotal: 0,
-    smallBoostsTotal: 0,
-  };
-  prev.games += 1;
-  prev.wins += r.won ? 1 : 0;
-  const boosts = boostParts(r);
-  prev.scoreTotal += safeNum(r.score);
-  prev.bigBoostsTotal += boosts.big;
-  prev.smallBoostsTotal += boosts.small;
-  byTypeMap.set(type, prev);
-});
-const byType = Array.from(byTypeMap.values())
-  .map((v) => ({
-    type: v.type,
-    games: v.games,
-    winRate: v.games ? v.wins / v.games : 0,
-    avgScore: v.games ? v.scoreTotal / v.games : 0,
-    avgBigBoosts: v.games ? v.bigBoostsTotal / v.games : 0,
-    avgSmallBoosts: v.games ? v.smallBoostsTotal / v.games : 0,
-    avgBoostTotal: v.games ? (v.bigBoostsTotal + v.smallBoostsTotal) / v.games : 0,
-  }))
-  .sort((a, b) => b.games - a.games);
+].slice(0, 8);
 
 const avgBigBoosts = avg("big_boosts");
 const avgSmallBoosts = avg("small_boosts");
 const avgBoostTotal = avgBigBoosts + avgSmallBoosts;
 const bigBoostShare = avgBoostTotal > 0 ? avgBigBoosts / avgBoostTotal : 0;
-const winBigBoost = avgIn(winsOnly, "big_boosts");
-const lossBigBoost = avgIn(lossesOnly, "big_boosts");
-const winSmallBoost = avgIn(winsOnly, "small_boosts");
-const lossSmallBoost = avgIn(lossesOnly, "small_boosts");
-const boostBars = [
-  { metric: "Big", avg: avgBigBoosts },
-  { metric: "Small", avg: avgSmallBoosts },
-];
-const boostWinLoss = [
-  { metric: "Big", win: winBigBoost, loss: lossBigBoost },
-  { metric: "Small", win: winSmallBoost, loss: lossSmallBoost },
-];
-
-const avgShotAccuracy = avg("shot_accuracy");
-const avgPressure = avg("pressure_index");
-const avgScoreShareTeam = avg("score_share_team");
-const avgGoalsShareTeam = avg("goals_share_team");
-const avgAssistsShareTeam = avg("assists_share_team");
-const avgSavesShareTeam = avg("saves_share_team");
-const avgTouchesShareTeam = avg("touches_share_team");
-const avgScoreVsOpp = avg("score_diff_vs_opponents");
-const avgGoalsVsOpp = avg("goals_diff_vs_opponents");
-const avgAssistsVsOpp = avg("assists_diff_vs_opponents");
-const avgSavesVsOpp = avg("saves_diff_vs_opponents");
-const avgTouchesVsOpp = avg("touches_diff_vs_opponents");
-const avgClears = avg("clears");
-const avgCenters = avg("centers");
-
-const categories = [
-  {
-    id: "offense",
-    label: "Offense",
-    metrics: [
-      { label: "Avg Goals", value: num(avg("goals")) },
-      { label: "Avg Shots", value: num(avg("shots")) },
-      { label: "Shot Accuracy", value: pct(avgShotAccuracy) },
-      { label: "Avg Centers", value: num(avgCenters) },
-      { label: "Goals vs Opp", value: signed(avgGoalsVsOpp) },
-    ],
-  },
-  {
-    id: "defense",
-    label: "Defense",
-    metrics: [
-      { label: "Avg Saves", value: num(avg("saves")) },
-      { label: "Avg Clears", value: num(avgClears) },
-      { label: "Saves vs Opp", value: signed(avgSavesVsOpp) },
-      { label: "Save Share Team", value: pct(avgSavesShareTeam) },
-    ],
-  },
-  {
-    id: "teamplay",
-    label: "Teamplay",
-    metrics: [
-      { label: "Avg Assists", value: num(avg("assists")) },
-      { label: "Score vs Mate", value: signed(avg("score_diff_vs_mate")) },
-      { label: "Score Share Team", value: pct(avgScoreShareTeam) },
-      { label: "Assists Share Team", value: pct(avgAssistsShareTeam) },
-    ],
-  },
-  {
-    id: "impact",
-    label: "Impact",
-    metrics: [
-      { label: "Avg Score", value: num(avg("score")) },
-      { label: "Pressure Index", value: num(avgPressure) },
-      { label: "Score vs Opp", value: signed(avgScoreVsOpp) },
-      { label: "Score vs Others", value: signed(avg("score_diff_vs_others")) },
-      { label: "Avg Touches", value: num(avg("touches")) },
-    ],
-  },
-  {
-    id: "context",
-    label: "Context",
-    metrics: [
-      { label: "Goal Share Team", value: pct(avgGoalsShareTeam) },
-      { label: "Assist vs Opp", value: signed(avgAssistsVsOpp) },
-      { label: "Touch Share Team", value: pct(avgTouchesShareTeam) },
-      { label: "Touches vs Opp", value: signed(avgTouchesVsOpp) },
-    ],
-  },
-];
 
 return {
   matches,
@@ -697,11 +599,6 @@ return {
   avgSmallBoosts,
   avgBoostTotal,
   bigBoostShare,
-  avgScoreDiff: avg("score_diff_vs_others"),
-  avgScoreMateDiff: avg("score_diff_vs_mate"),
-  avgGoalsDiff: avg("goals_diff_vs_others"),
-  avgAssistsDiff: avg("assists_diff_vs_others"),
-  avgSavesDiff: avg("saves_diff_vs_others"),
   modeBars,
   modeOutcomeBars,
   durationBuckets,
@@ -715,13 +612,6 @@ return {
   enemies,
   uniqueEnemies: enemies.length,
   miscStats,
-  impactStats,
-  byType,
-  boostBars,
-  boostWinLoss,
-  avgShotAccuracy,
-  avgPressure,
-  avgScoreShareTeam,
-  categories,
+  daysPlayedHeatmap,
 };
 }

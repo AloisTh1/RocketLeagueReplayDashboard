@@ -1,9 +1,13 @@
 import json
 import math
+import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from backend.replay import build_row, canonicalize_replay
+from backend.config import ReplayDigest
+from backend.replay import build_row, canonicalize_replay, parse_or_cache_replay
 
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "replay_contract_fixture.json"
@@ -41,8 +45,98 @@ class ReplayContractTest(unittest.TestCase):
     def test_build_row_matches_fixture_contract(self):
         fixture = load_fixture()
         canonical = canonicalize_replay(fixture["raw"], replay_id=fixture["expected_canonical"]["replay_id"])
-        actual = build_row(canonical, player_id="76561190000000001", highlight_name="")
+        actual = build_row(canonical, player_id="tracked-player-000001", highlight_name="")
         assert_nested_equal(self, actual, fixture["expected_row"])
+
+    def test_build_row_returns_none_when_player_id_is_not_found(self):
+        fixture = load_fixture()
+        canonical = canonicalize_replay(fixture["raw"], replay_id=fixture["expected_canonical"]["replay_id"])
+        actual = build_row(canonical, player_id="missing-player-id", highlight_name="")
+        self.assertIsNone(actual)
+
+    def test_build_row_returns_none_when_highlight_name_is_not_found(self):
+        fixture = load_fixture()
+        canonical = canonicalize_replay(fixture["raw"], replay_id=fixture["expected_canonical"]["replay_id"])
+        actual = build_row(canonical, player_id="", highlight_name="DefinitelyNotInThisReplay")
+        self.assertIsNone(actual)
+
+    def test_timeout_failures_are_not_cached_as_permanent_errors(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+          replay_path = Path(tmp_dir) / "sample.replay"
+          replay_path.write_bytes(b"demo")
+          digest = ReplayDigest(
+              replay_id="sample",
+              file_path=replay_path,
+              file_size=replay_path.stat().st_size,
+              file_mtime_ns=replay_path.stat().st_mtime_ns,
+          )
+          with patch("backend.replay.run_boxcars_json", side_effect=RuntimeError("boxcars timed out after 45s")):
+              replay_data, from_cache, error = parse_or_cache_replay(
+                  digest,
+                  boxcars_exe=Path("fake-boxcars"),
+                  use_cache=True,
+                  write_cache=True,
+                  cache_dir=tmp_dir,
+                  raw_dir=tmp_dir,
+              )
+          self.assertIsNone(replay_data)
+          self.assertFalse(from_cache)
+          self.assertIn("timed out", error)
+
+          fixture = load_fixture()
+          with patch("backend.replay.run_boxcars_json", return_value=fixture["raw"]):
+              replay_data, from_cache, error = parse_or_cache_replay(
+                  digest,
+                  boxcars_exe=Path("fake-boxcars"),
+                  use_cache=True,
+                  write_cache=True,
+                  cache_dir=tmp_dir,
+                  raw_dir=tmp_dir,
+              )
+          self.assertIsNotNone(replay_data)
+          self.assertFalse(from_cache)
+          self.assertIsNone(error)
+
+    def test_cancelled_failures_are_not_cached_as_permanent_errors(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            replay_path = Path(tmp_dir) / "sample.replay"
+            replay_path.write_bytes(b"demo")
+            digest = ReplayDigest(
+                replay_id="sample-cancel",
+                file_path=replay_path,
+                file_size=replay_path.stat().st_size,
+                file_mtime_ns=replay_path.stat().st_mtime_ns,
+            )
+            cancel_event = threading.Event()
+            cancel_event.set()
+
+            replay_data, from_cache, error = parse_or_cache_replay(
+                digest,
+                boxcars_exe=Path("fake-boxcars"),
+                cancel_event=cancel_event,
+                use_cache=True,
+                write_cache=True,
+                cache_dir=tmp_dir,
+                raw_dir=tmp_dir,
+            )
+            self.assertIsNone(replay_data)
+            self.assertFalse(from_cache)
+            self.assertIn("cancelled", error)
+
+            fixture = load_fixture()
+            with patch("backend.replay.run_boxcars_json", return_value=fixture["raw"]):
+                replay_data, from_cache, error = parse_or_cache_replay(
+                    digest,
+                    boxcars_exe=Path("fake-boxcars"),
+                    cancel_event=threading.Event(),
+                    use_cache=True,
+                    write_cache=True,
+                    cache_dir=tmp_dir,
+                    raw_dir=tmp_dir,
+                )
+            self.assertIsNotNone(replay_data)
+            self.assertFalse(from_cache)
+            self.assertIsNone(error)
 
 
 if __name__ == "__main__":

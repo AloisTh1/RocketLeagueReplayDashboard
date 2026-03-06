@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { buildTopKpiCards, computeTrackedPlayerOverview } from "../src/features/dashboard/kpis.js";
 
-const trackedId = "76561190000000001";
+const trackedId = "tracked-player-000001";
 
 function makeRow({
   id,
@@ -86,33 +86,43 @@ test("tracked player KPI values stay fresh for the provided scoped rows", () => 
   });
 });
 
-test("buildTopKpiCards collapses replay card when team and player values match", () => {
+test("buildTopKpiCards keeps replays fixed and win rate player-only", () => {
   const cards = buildTopKpiCards({
     totalMatches: 5,
     trackedPlayerOverview: { matches: 5, wins: 2, winRate: 0.4 },
     hasTrackedPlayerMatch: true,
     playerMetricPrompt: "player id not found",
-    playerIdPrompt: "please fill player id",
   });
 
   assert.equal(cards[0].label, "Replays");
-  assert.equal(cards[0].showDual, false);
   assert.equal(cards[0].primaryValue, "5");
   assert.equal(cards[1].label, "Win Rate");
   assert.equal(cards[1].primaryValue, "40.00%");
 });
 
-test("buildTopKpiCards shows replay split when tracked scope differs and win-rate prompt when missing", () => {
+test("buildTopKpiCards does not split replays when tracked scope differs", () => {
   const cards = buildTopKpiCards({
     totalMatches: 7,
     trackedPlayerOverview: { matches: 5, wins: 0, winRate: null },
     hasTrackedPlayerMatch: true,
     playerMetricPrompt: "player id not found",
-    playerIdPrompt: "please fill player id",
   });
 
-  assert.equal(cards[0].showDual, true);
   assert.equal(cards[0].primaryValue, "7");
   assert.equal(cards[1].primaryValue, "player id not found");
+});
+
+test("buildTopKpiCards uses the empty player-id prompt for player-only KPI cards", () => {
+  const cards = buildTopKpiCards({
+    totalMatches: 7,
+    trackedPlayerOverview: { matches: 0, wins: 0, winRate: null },
+    hasTrackedPlayerMatch: false,
+    playerMetricPrompt: "please fill player id",
+  });
+
+  assert.equal(cards[0].label, "Replays");
+  assert.equal(cards[0].primaryValue, "7");
+  assert.equal(cards[1].label, "Win Rate");
+  assert.equal(cards[1].primaryValue, "please fill player id");
 });
 

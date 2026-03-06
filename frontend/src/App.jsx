@@ -6,6 +6,8 @@ import {
   BarChart,
   Cell,
   CartesianGrid,
+  ComposedChart,
+  LabelList,
   Line,
   LineChart,
   Legend,
@@ -41,7 +43,6 @@ import { useBoostTrail } from "./app/hooks/useBoostTrail";
 import { computeDerived } from "./app/derived";
 import {
   ANALYTICS_VIEW_DEFS,
-  CATEGORY_DOCS,
   METRIC_DOCS,
   PLATFORM_LEGEND,
   RECENT_COLUMN_DEFS,
@@ -53,7 +54,7 @@ import { didPlayerWin, findPlayerMetric, isTrackedRow, normalizeIdentity, resolv
 import { buildQuickLinks } from "./features/dashboard/quickLinks";
 import { filterRecentRows, paginateRecentRows, sortRecentRows } from "./features/dashboard/recentTable";
 import { inferQuickPreset, quickDateRange } from "./features/dashboard/dateRanges";
-import { MAP_WINRATE_PRIMARY_KEY, MAP_WINRATE_SECONDARY_KEY, formatMapAxisLabel, selectMapWinRateChartRows } from "./features/dashboard/distribution";
+import { MAP_WINRATE_PRIMARY_KEY, formatMapCategoryLabel, selectMapWinRateChartRows } from "./features/dashboard/distribution";
 import { Tip } from "./features/dashboard/components/Tip";
 import { PlayerTrackingCallout } from "./features/dashboard/components/PlayerTrackingCallout";
 import { PlayerIdPickerModal } from "./features/dashboard/components/PlayerIdPickerModal";
@@ -62,6 +63,7 @@ import { StatsInfoModal } from "./features/dashboard/components/StatsInfoModal";
 import { KPI_MARKDOWN_DOCS, kpiDoc } from "./features/dashboard/kpiDocs";
 import { buildTopKpiCards, computeTrackedPlayerOverview } from "./features/dashboard/kpis";
 import {
+  buildBucketCorrelations,
   buildPlayerContributionTrend,
   buildPlayerTrend,
   buildRegressionSeries,
@@ -70,6 +72,11 @@ import {
 } from "./features/dashboard/trends";
 
 export default function App() {
+  const playerCurveColor = "#22c55e";
+  const playerCurveSoftColor = "#86efac";
+  const mateOverlayColor = "#38bdf8";
+  const enemyCurveColor = "#ef4444";
+  const mateOverlayBarFill = "rgba(56, 189, 248, 0.65)";
   const slurpIndicator = (big, small) => {
     const safeBig = Number(big);
     const safeSmall = Number(small);
@@ -122,6 +129,7 @@ export default function App() {
   const [runElapsed, setRunElapsed] = useState(0);
   const [currentRunId, setCurrentRunId] = useState("");
   const [progress, setProgress] = useState(null);
+  const [parseSpeedHistory, setParseSpeedHistory] = useState([]);
   const [scrollY, setScrollY] = useState(0);
   const heroRef = useRef(null);
   const [theme, setTheme] = useState(initialTheme);
@@ -130,7 +138,10 @@ export default function App() {
   const [selectedReplayIds, setSelectedReplayIds] = useState([]);
   const [statsView, setStatsView] = useState("aggregate");
   const [analyticsView, setAnalyticsView] = useState("overview");
-  const [showMateComparison, setShowMateComparison] = useState(false);
+  const [showBoostMateOverlay, setShowBoostMateOverlay] = useState(false);
+  const [showScoreMomentumMateOverlay, setShowScoreMomentumMateOverlay] = useState(false);
+  const [showScoreGapMateOverlay, setShowScoreGapMateOverlay] = useState(false);
+  const [showContributionRegression, setShowContributionRegression] = useState(false);
   const [focusedReplayId, setFocusedReplayId] = useState("");
   const [recentSort, setRecentSort] = useState({ col: "date", dir: "desc" });
   const [groupedTypeSort, setGroupedTypeSort] = useState({ col: "games", dir: "desc" });
@@ -389,6 +400,7 @@ export default function App() {
 
     const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setCurrentRunId(runId);
+    setParseSpeedHistory([]);
     setProgress({
       run_id: runId,
       processed: 0,
@@ -658,7 +670,6 @@ export default function App() {
   const playerScopedInsights = useMemo(() => {
     if (!hasTrackedPlayerMatch) {
       return {
-        categories: [],
         impactStats: [],
         boostBars: [],
         boostWinLoss: [],
@@ -675,58 +686,10 @@ export default function App() {
     };
     const winsOnly = rows.filter((r) => didPlayerWin(r, trackedPlayerId));
     const lossesOnly = rows.filter((r) => !didPlayerWin(r, trackedPlayerId));
-    const categories = [
-      {
-        id: "offense",
-        label: "Offense",
-        metrics: [
-          { label: "Avg Goals", value: num(avgOf("goals")) },
-          { label: "Avg Shots", value: num(avgOf("shots")) },
-          { label: "Shot Accuracy", value: pct(avgOf("shot_accuracy")) },
-          { label: "Goals vs Opp", value: signed(avgOf("goals_diff_vs_opponents")) },
-        ],
-      },
-      {
-        id: "defense",
-        label: "Defense",
-        metrics: [
-          { label: "Avg Saves", value: num(avgOf("saves")) },
-          { label: "Saves vs Opp", value: signed(avgOf("saves_diff_vs_opponents")) },
-          { label: "Save Share Team", value: pct(avgOf("saves_share_team")) },
-        ],
-      },
-      {
-        id: "teamplay",
-        label: "Teamplay",
-        metrics: [
-          { label: "Avg Assists", value: num(avgOf("assists")) },
-          { label: "Score vs Mate", value: signed(avgOf("score_diff_vs_mate")) },
-          { label: "Score Share Team", value: pct(avgOf("score_share_team")) },
-          { label: "Assists Share Team", value: pct(avgOf("assists_share_team")) },
-        ],
-      },
-      {
-        id: "impact",
-        label: "Impact",
-        metrics: [
-          { label: "Tracked Avg Score", value: num(avgOf("score")) },
-          { label: "Pressure Index", value: num(avgOf("pressure_index")) },
-          { label: "Score vs Opp", value: signed(avgOf("score_diff_vs_opponents")) },
-          { label: "Score vs Lobby Avg", value: signed(avgOf("score_vs_lobby_avg")) },
-        ],
-      },
-      {
-        id: "context",
-        label: "Context",
-        metrics: [
-          { label: "Goal Share Team", value: pct(avgOf("goals_share_team")) },
-          { label: "Assist vs Opp", value: signed(avgOf("assists_diff_vs_opponents")) },
-        ],
-      },
-    ];
     const impactStats = [
       { key: "score", label: "Score" },
       { key: "goals", label: "Goals" },
+      { key: "shot_accuracy", label: "Goals / Shot" },
       { key: "shots", label: "Shots" },
       { key: "saves", label: "Saves" },
       { key: "touches", label: "Touches" },
@@ -807,9 +770,8 @@ export default function App() {
         avgBoostTotal: v.games ? (v.bigBoostsTotal + v.smallBoostsTotal) / v.games : 0,
       }))
       .sort((a, b) => b.games - a.games);
-    return { categories, impactStats, boostBars, boostWinLoss, byType };
+    return { impactStats, boostBars, boostWinLoss, byType };
   }, [activeRecent, focusedReplay, hasTrackedPlayerMatch, statsView, trackedPlayerId]);
-  const scopedCategories = playerScopedInsights.categories || [];
   const scopedImpactStats = playerScopedInsights.impactStats || [];
   const scopedBoostBars = playerScopedInsights.boostBars || [];
   const scopedBoostWinLoss = playerScopedInsights.boostWinLoss || [];
@@ -840,23 +802,24 @@ export default function App() {
 
   const cards = buildTopKpiCards({
     totalMatches: derived.matches,
-    trackedPlayerOverview: {
-      ...trackedPlayerOverview,
-      winRate: trackedPlayerOverview.winRate,
-    },
+    trackedPlayerOverview,
     hasTrackedPlayerMatch,
     playerMetricPrompt,
-    playerIdPrompt,
   }).map((card) => ({
     ...card,
     icon: card.label === "Win Rate" ? Trophy : Activity,
-    playerValue: card.label === "Win Rate" && trackedPlayerOverview.winRate !== null ? pct(trackedPlayerOverview.winRate) : card.playerValue,
     primaryValue: card.label === "Win Rate" && trackedPlayerOverview.winRate !== null
       ? pct(trackedPlayerOverview.winRate)
       : card.primaryValue,
   }));
   const quickLinks = useMemo(() => buildQuickLinks(analyticsView), [analyticsView]);
-  const mapWinRateRows = useMemo(() => selectMapWinRateChartRows(viewDerived.mapWinBars, 12), [viewDerived.mapWinBars]);
+  const mapWinRateRows = useMemo(
+    () => selectMapWinRateChartRows(viewDerived.mapWinBars, 12).map((row) => ({
+      ...row,
+      winRateLabel: `${num(row?.winRatePct, 2)}% | ${Number(row?.games || 0)}g`,
+    })),
+    [viewDerived.mapWinBars]
+  );
 
   const summary = dashboard.summary || {};
   const allRecent = useMemo(() => analysisFilteredRecent.slice(), [analysisFilteredRecent]);
@@ -944,6 +907,38 @@ export default function App() {
       mateTotal: mateMap.get(row.bucket)?.mateTotal ?? null,
     }));
   }, [activeContributionTrend, activeMateContributionTrend]);
+  const overviewContributionTrendDataWithRegression = useMemo(() => {
+    const goalsRegression = buildRegressionSeries(overviewContributionTrendData, "goals", "goalsRegression");
+    const assistsRegression = buildRegressionSeries(goalsRegression, "assists", "assistsRegression");
+    const savesRegression = buildRegressionSeries(assistsRegression, "saves", "savesRegression");
+    return buildRegressionSeries(savesRegression, "shot_accuracy", "shotAccuracyRegression");
+  }, [overviewContributionTrendData]);
+  const overviewCorrelationRows = useMemo(() => {
+    const contributionByBucket = new Map((overviewContributionTrendData || []).map((row) => [row.bucket, row]));
+    const combinedRows = (activeTrend || []).map((row) => ({
+      ...row,
+      goals: contributionByBucket.get(row.bucket)?.goals ?? null,
+      assists: contributionByBucket.get(row.bucket)?.assists ?? null,
+      saves: contributionByBucket.get(row.bucket)?.saves ?? null,
+      shot_accuracy: contributionByBucket.get(row.bucket)?.shot_accuracy ?? null,
+    }));
+    return buildBucketCorrelations(combinedRows, [
+      { key: "games", label: "Games" },
+      { key: "winRate", label: "Win Rate" },
+      { key: "avgScore", label: "Score" },
+      { key: "scoreGap", label: "Score vs Lobby Avg" },
+      { key: "goals", label: "Goals" },
+      { key: "assists", label: "Assists" },
+      { key: "saves", label: "Saves" },
+      { key: "shot_accuracy", label: "Goals / Shot" },
+    ]);
+  }, [activeTrend, overviewContributionTrendData]);
+  const contributionTooltipFormatter = (value, name) => {
+    if (name === "Goals / Shot" || name === "Goals / Shot regression") {
+      return pct(Number(value) || 0);
+    }
+    return num(value, 2);
+  };
   const mateMetricAverage = (sourceRows, metricKey) => {
     const values = (sourceRows || [])
       .map((row) => {
@@ -1031,7 +1026,18 @@ export default function App() {
             })
           : (perspective.opponentPlayers || []);
         if (!roster.length) return null;
-        const numbers = roster.map((player) => Number(player?.[metricKey])).filter((value) => Number.isFinite(value));
+        const numbers = roster
+          .map((player) => {
+            if (metricKey === "shot_accuracy") {
+              const goals = Number(player?.goals);
+              const shots = Number(player?.shots);
+              if (Number.isFinite(goals) && Number.isFinite(shots) && shots > 0) return goals / shots;
+              return null;
+            }
+            const value = Number(player?.[metricKey]);
+            return Number.isFinite(value) ? value : null;
+          })
+          .filter((value) => value !== null);
         if (!numbers.length) return null;
         return numbers.reduce((sum, value) => sum + value, 0) / numbers.length;
       })
@@ -1045,6 +1051,7 @@ export default function App() {
     const metrics = [
       { axis: "Score", key: "score" },
       { axis: "Goals", key: "goals" },
+      { axis: "Goals / Shot", key: "shot_accuracy" },
       { axis: "Assists", key: "assists" },
       { axis: "Saves", key: "saves" },
       { axis: "Shots", key: "shots" },
@@ -1126,6 +1133,10 @@ export default function App() {
       const text = String(bucket || "");
       return text.length > 11 ? text.slice(5) : text;
     }
+    if (timeTab === "timeline_hour") {
+      const text = String(bucket || "");
+      return text.length > 13 ? text.slice(5) : text;
+    }
     return String(bucket || "");
   };
   const singleMatchTickFormatter = (name) => {
@@ -1133,7 +1144,6 @@ export default function App() {
     return text.length > 14 ? `${text.slice(0, 12)}..` : text;
   };
   const shouldShowAnalytics = (...groups) => analyticsView === "all" || groups.includes(analyticsView);
-  const supportsMateOverlay = statsView !== "single" && ["overview", "boost", "all"].includes(analyticsView);
   const timeAggregate = useMemo(() => {
     const rows = (activeTrend || []).filter((r) => Number(r?.games || 0) > 0);
     if (!rows.length) {
@@ -1175,29 +1185,27 @@ export default function App() {
   const overviewChartHeight = timeTab === "hour" ? 150 : 260;
   const boostChartSyncId = "boost-sync";
   const overviewChartSyncId = "overview-sync";
-  const orderedTimeTabs = ["hour", "hour_of_day", "day", "week", "month"];
+  const timeTabGroups = [
+    {
+      id: "timeline",
+      label: "Timeline",
+      keys: ["hour", "timeline_hour", "day", "week", "month"],
+    },
+    {
+      id: "aggregate",
+      label: "Aggregate",
+      keys: ["hour_of_day", "day_of_week", "week_of_year", "month_of_year"],
+    },
+  ];
   const statsInfoSections = [
     {
       title: "Top KPI Cards",
-      scope: "Dynamic",
+      scope: "Top-level summary cards",
       items: cards.map((card) => ({
         name: card.label,
-        value: card.showDual
-          ? `Team: ${card.teamValue} | Player: ${card.playerValue || card.playerEmpty || "-"}`
-          : card.primaryValue,
+        value: card.primaryValue,
         desc: kpiDoc(card.label) || METRIC_DOCS[card.label] || "Derived metric.",
       })),
-    },
-    {
-      title: "Feature Categories (Player scope)",
-      scope: "Player",
-      items: (scopedCategories || []).flatMap((cat) =>
-        (cat.metrics || []).map((metric) => ({
-          name: `${cat.label} - ${metric.label}`,
-          value: String(metric.value || "-"),
-          desc: `${CATEGORY_DOCS[cat.label] || `Category: ${cat.label}.`} ${METRIC_DOCS[metric.label] || "Category metric derived from scoped replays."}`,
-        })),
-      ),
     },
     {
       title: "Boost Metrics (Player scope)",
@@ -1285,6 +1293,11 @@ export default function App() {
           value: timeAggregate.busiestBucket?.bucket || "-",
           desc: METRIC_DOCS["Busiest Bucket"],
         },
+        {
+          name: `${activeTimeMeta.short} Correlations`,
+          value: `${overviewCorrelationRows.length} metrics`,
+          desc: `Pearson correlation between ${activeTimeMeta.short.toLowerCase()} bucket order and the current bucketed metrics. Positive means the metric tends to rise later in the selected ${activeTimeMeta.short.toLowerCase()} sequence; negative means it tends to fall.`,
+        },
       ],
     },
     {
@@ -1323,7 +1336,7 @@ export default function App() {
         },
         {
           name: "Match Type Rows",
-          value: `${(viewDerived.byType || []).length} types`,
+          value: `${(scopedByType || []).length} types`,
           desc: "Per type: games, winRate, avgScore, avgBigBoosts, avgSmallBoosts, avgBoostTotal. Computed from scoped matches grouped by `match_type`.",
         },
       ],
@@ -1375,11 +1388,7 @@ export default function App() {
       section.items.forEach((item) => {
         let group = "General";
         let metricName = item.name;
-        if (section.title.startsWith("Feature Categories") && item.name.includes(" - ")) {
-          const parts = item.name.split(" - ");
-          group = parts[0] || "Category";
-          metricName = parts.slice(1).join(" - ") || item.name;
-        } else if (section.title.startsWith("Boost Metrics")) {
+        if (section.title.startsWith("Boost Metrics")) {
           if (item.name.startsWith("Boost Avg - ")) group = "Averages";
           else if (item.name.startsWith("Boost Win Avg - ") || item.name.startsWith("Boost Loss Avg - ")) group = "Win/Loss Split";
         } else if (section.title.startsWith("Time & Trend")) {
@@ -1400,6 +1409,24 @@ export default function App() {
     }));
   }, [statsInfoSections]);
   const live = loading && progress && progress.run_id === currentRunId ? progress : null;
+  useEffect(() => {
+    if (!live || !loading) return;
+    const elapsed = Number(live.elapsed_seconds ?? runElapsed ?? 0);
+    const processed = Number(live.processed ?? 0);
+    if (!Number.isFinite(elapsed) || elapsed <= 0 || !Number.isFinite(processed) || processed < 0) return;
+    const point = {
+      elapsed,
+      processed,
+      speed: processed / elapsed,
+    };
+    setParseSpeedHistory((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && last.processed === point.processed && Math.abs(last.elapsed - point.elapsed) < 0.25) {
+        return prev;
+      }
+      return [...prev, point].slice(-80);
+    });
+  }, [live, loading, runElapsed]);
   const queuedReplays = Number(live?.queued ?? summary.queued_replays ?? 0);
   const parsedReplays = Number(live?.parsed ?? summary.parsed_replays ?? 0);
   const failedReplays = Number(live?.failed ?? summary.failed_replays ?? 0);
@@ -1419,6 +1446,10 @@ export default function App() {
   );
   const processTotal = queuedReplays > 0 ? queuedReplays : 0;
   const processedPct = pctInt(processedReplays, processTotal);
+  const latestParseSpeed = parseSpeedHistory.length
+    ? parseSpeedHistory[parseSpeedHistory.length - 1]?.speed ?? 0
+    : 0;
+  const peakParseSpeed = parseSpeedHistory.reduce((max, point) => Math.max(max, Number(point?.speed || 0)), 0);
   const stopRunId = String(currentRunId || progress?.run_id || "").trim();
   const chartGrid = theme === "light" ? "#d3e1f0" : "#233041";
   const chartTick = theme === "light" ? "#4b6078" : "#9db0c8";
@@ -1641,25 +1672,11 @@ export default function App() {
                   <c.icon size={16} />
                   <span title={kpiDoc(c.label) || undefined}>{c.label}</span>
                 </div>
-                {c.showDual ? (
-                  <div className="card-scope-grid">
-                    <div className="card-scope-row">
-                      <span className="metric-scope-pill team" title="Team metric: aggregated from the active replay selection.">Team</span>
-                      <strong>{c.teamValue}</strong>
-                    </div>
-                    <div className="card-scope-row">
-                      <span className="metric-scope-pill player" title="Player metric: tracked-player value using the current Player ID.">Player</span>
-                      <strong>{c.playerValue || c.playerEmpty || "-"}</strong>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="card-single-value">
-                    <strong>{c.primaryValue}</strong>
-                  </div>
-                )}
+                <div className="card-single-value">
+                  <strong>{c.primaryValue}</strong>
+                </div>
               </article>
             ))}
-            <p className="scope-note">{KPI_MARKDOWN_DOCS["Display rule"] || "KPI cards only split into team/player when the tracked-player value actually differs."}</p>
             <section className="global-nav">
               <div className="global-nav-title">Player</div>
               <label className="global-player-id">
@@ -1805,6 +1822,28 @@ export default function App() {
                   <div><span>Matched</span><strong>{matchedReplays}</strong></div>
                   <div><span>Cache Hits</span><strong>{cacheHits}</strong></div>
                   <div><span>Cache Misses</span><strong>{cacheMisses}</strong></div>
+                </div>
+                <div className="speed-panel">
+                  <div className="bar-label">Parsing speed</div>
+                  <div className="speed-meta">
+                    <span>Current {num(latestParseSpeed, 2)} replay/s</span>
+                    <span>Peak {num(peakParseSpeed, 2)} replay/s</span>
+                  </div>
+                  <div className="speed-chart">
+                    {parseSpeedHistory.length >= 2 ? (
+                      <ResponsiveContainer width="100%" height={84}>
+                        <LineChart data={parseSpeedHistory}>
+                          <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                          <XAxis dataKey="elapsed" tick={{ fill: chartTick, fontSize: 10 }} tickFormatter={(value) => `${Math.round(Number(value) || 0)}s`} minTickGap={18} />
+                          <YAxis tick={{ fill: chartTick, fontSize: 10 }} tickFormatter={(value) => `${num(value, 1)}`} width={34} />
+                          <Tooltip formatter={(value) => `${num(value, 2)} replay/s`} labelFormatter={(value) => `${num(value, 2)}s`} />
+                          <Line type="monotone" dataKey="speed" name="Replay/s" stroke="#38bdf8" strokeWidth={2} dot={false} activeDot={{ r: 3 }} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="speed-empty">Waiting for enough progress samples...</div>
+                    )}
+                  </div>
                 </div>
                 <div className="cache-mode-banner">
                   Cache write mode for this run:
@@ -1983,23 +2022,30 @@ export default function App() {
           </div>
           <div className="filter-menu-block">
             <div className="filter-menu-label">Time view</div>
-            <div className="tabs-row">
-              {orderedTimeTabs.map((key) => {
-                const meta = tabMeta[key];
-                if (!meta) return null;
-                return (
-                <button
-                  type="button"
-                  key={key}
-                  className={`tab-btn ${analysisDraftTimeTab === key ? "active" : ""}`}
-                  title={meta.tip}
-                  aria-label={`${meta.label}. ${meta.tip}`}
-                  onClick={() => setAnalysisDraftTimeTab(key)}
-                >
-                  {meta.short}
-                </button>
-                );
-              })}
+            <div className="time-tab-groups">
+              {timeTabGroups.map((group) => (
+                <div key={group.id} className="time-tab-group">
+                  <div className="filter-menu-label">{group.label}</div>
+                  <div className="tabs-row">
+                    {group.keys.map((key) => {
+                      const meta = tabMeta[key];
+                      if (!meta) return null;
+                      return (
+                      <button
+                        type="button"
+                        key={key}
+                        className={`tab-btn ${analysisDraftTimeTab === key ? "active" : ""}`}
+                        title={meta.tip}
+                        aria-label={`${meta.label}. ${meta.tip}`}
+                        onClick={() => setAnalysisDraftTimeTab(key)}
+                      >
+                        {meta.short}
+                      </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
           <div className="quick-row analysis-quick-row">
@@ -2050,28 +2096,23 @@ export default function App() {
               ? " Single-match view compares all players in the selected replay."
               : " Player metrics are the default. Mates overlay only appears on comparable charts."}
           </p>
-          {supportsMateOverlay && (
-            <div className="analysis-overlay-row">
-              <div className="analysis-overlay-copy">
-                <div className="filter-menu-label">Comparison overlay</div>
-                <p>Draw teammate averages on comparable player charts.</p>
-              </div>
-              <button
-                type="button"
-                className={`mini-btn ghost analysis-overlay-toggle ${showMateComparison ? "active" : ""}`}
-                onClick={() => setShowMateComparison((value) => !value)}
-                aria-pressed={showMateComparison}
-                title="Toggle teammate average overlays on supported charts."
-              >
-                {showMateComparison ? "Hide mates overlay" : "Show mates overlay"}
-              </button>
-            </div>
-          )}
         </section>
         <section className={`chart-grid ${timeTab === "hour" ? "timeline-expanded" : ""}`}>
           {shouldShowAnalytics("boost") && (
           <article id="boost-metrics" className="panel chart-panel tabs-panel">
-            <div className="panel-title"><Gauge size={18} /> {statsView === "single" ? "Single Match Boost Metrics" : "Boost Metrics"} <span className="metric-scope-pill player" title={statsView === "single" ? "Single match view: each bar is one player from the selected replay." : "Player metric: boost stats for the tracked player in each replay."}>{statsView === "single" ? "All players" : "Player"}</span> <Tip text={statsView === "single" ? "Selected replay only. Compares every player's big/small boost usage and slurping ratio." : "Compares player boost usage. Turn on `Show mates overlay` to compare against teammate averages."} /></div>
+            <div className="panel-title"><Gauge size={18} /> {statsView === "single" ? "Single Match Boost Metrics" : "Boost Metrics"} <span className="metric-scope-pill player" title={statsView === "single" ? "Single match view: each bar is one player from the selected replay." : "Player metric: boost stats for the tracked player in each replay."}>{statsView === "single" ? "All players" : "Player"}</span> <Tip text={statsView === "single" ? "Selected replay only. Compares every player's big/small boost usage and slurping ratio." : "Compares player boost usage. Turn on `Show mates overlay` to compare against teammate averages."} />{statsView !== "single" && hasTrackedPlayerMatch && (
+              <label className="chart-checkbox-row chart-checkbox-inline" title="Add teammate averages to the boost charts in this panel only.">
+                <input
+                  type="checkbox"
+                  checked={showBoostMateOverlay}
+                  onChange={(event) => setShowBoostMateOverlay(event.target.checked)}
+                />
+                <span className="chart-switch" aria-hidden="true">
+                  <span className="chart-switch-thumb" />
+                </span>
+                <span className="chart-checkbox-label">Mates</span>
+              </label>
+            )}</div>
             {statsView === "single" ? (!focusedReplay || !singleMatchPlayers.length ? (
               <p className="failure-empty">Select a replay row to compare every player in one match.</p>
             ) : (
@@ -2116,7 +2157,7 @@ export default function App() {
                       <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
                       <Tooltip formatter={(value) => num(value, 2)} />
                       <Bar dataKey="avg" name="Player avg" fill="#f59e0b" radius={[6, 6, 0, 0]} />
-                      {showMateComparison && <Bar dataKey="mateAvg" name="Mate avg" fill="#38bdf8" radius={[6, 6, 0, 0]} />}
+                      {showBoostMateOverlay && <Bar dataKey="mateAvg" name="Mate avg" fill={mateOverlayBarFill} radius={[6, 6, 0, 0]} />}
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -2129,8 +2170,8 @@ export default function App() {
                       <Tooltip formatter={(value) => num(value, 2)} />
                       <Bar dataKey="win" name="Player win avg" fill="#22c55e" radius={[6, 6, 0, 0]} />
                       <Bar dataKey="loss" name="Player loss avg" fill="#fb7185" radius={[6, 6, 0, 0]} />
-                      {showMateComparison && <Bar dataKey="mateWin" name="Mate win avg" fill="#67e8f9" radius={[6, 6, 0, 0]} />}
-                      {showMateComparison && <Bar dataKey="mateLoss" name="Mate loss avg" fill="#fda4af" radius={[6, 6, 0, 0]} />}
+                      {showBoostMateOverlay && <Bar dataKey="mateWin" name="Mate win avg" fill={mateOverlayBarFill} radius={[6, 6, 0, 0]} />}
+                      {showBoostMateOverlay && <Bar dataKey="mateLoss" name="Mate loss avg" fill={mateOverlayBarFill} radius={[6, 6, 0, 0]} />}
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -2140,7 +2181,7 @@ export default function App() {
                     <strong>{boostSummary.playerSlurp === null ? "-" : num(boostSummary.playerSlurp, 2)}</strong>
                     <span>{boostSummary.playerBigShare === null ? "No boost ratio data" : `Big boost share: ${pct(boostSummary.playerBigShare)}`}</span>
                   </div>
-                  {showMateComparison && (
+                  {showBoostMateOverlay && (
                     <div className="impact-chip">
                       <div>Mates Slurping Indicator</div>
                       <strong>{boostSummary.mateSlurp === null ? "-" : num(boostSummary.mateSlurp, 2)}</strong>
@@ -2181,8 +2222,8 @@ export default function App() {
                     <XAxis dataKey="bucket" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={trendTickFormatter} />
                     <YAxis tick={{ fill: chartTick, fontSize: 11 }} domain={[0, 1]} />
                     <Tooltip />
-                    <Line type="monotone" dataKey="winRate" stroke="#4ade80" strokeWidth={3} dot={false} />
-                    <Line type="monotone" dataKey="winRateRegression" name="Win-rate regression" stroke="#86efac" strokeWidth={2} strokeDasharray="7 5" dot={false} connectNulls />
+                    <Line type="monotone" dataKey="winRate" stroke={playerCurveColor} strokeWidth={3} dot={false} />
+                    <Line type="monotone" dataKey="winRateRegression" name="Win-rate regression" stroke={playerCurveSoftColor} strokeWidth={2} strokeDasharray="7 5" dot={false} connectNulls />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -2191,7 +2232,19 @@ export default function App() {
           )}
           {shouldShowAnalytics("overview") && (
           <article id="score-momentum" className="panel chart-panel overview-chart-panel">
-            <div className="panel-title"><Gauge size={18} /> {statsView === "single" ? "Single Match Score vs Lobby Avg" : `${tabMeta[timeTab].label} Score Momentum`} <span className="metric-scope-pill player" title={statsView === "single" ? "Single match view: compares every player in the selected replay." : "Player metric: score momentum uses tracked-player score per replay."}>{statsView === "single" ? "All players" : "Player"}</span> {statsView !== "single" && showMateComparison && <span className="metric-scope-pill team" title="Mate comparison overlay: average score of the tracked player's teammates in each bucket.">Mates overlay</span>} <Tip text={statsView === "single" ? "Selected replay only. Shows how far above or below lobby average each player scored." : "Tracked-player average score over time. Turn on `Show mates overlay` to compare against teammate average score."} /></div>
+            <div className="panel-title"><Gauge size={18} /> {statsView === "single" ? "Single Match Score vs Lobby Avg" : `${tabMeta[timeTab].label} Score Momentum`} <span className="metric-scope-pill player" title={statsView === "single" ? "Single match view: compares every player in the selected replay." : "Player metric: score momentum uses tracked-player score per replay."}>{statsView === "single" ? "All players" : "Player"}</span> {statsView !== "single" && showScoreMomentumMateOverlay && <span className="metric-scope-pill team" title="Mate comparison overlay: average score of the tracked player's teammates in each bucket.">Mates overlay</span>} <Tip text={statsView === "single" ? "Selected replay only. Shows how far above or below lobby average each player scored." : "Tracked-player average score over time. Turn on `Show mates overlay` to compare against teammate average score."} />{statsView !== "single" && hasTrackedPlayerMatch && (
+              <label className="chart-checkbox-row chart-checkbox-inline" title="Add teammate average score to this chart only.">
+                <input
+                  type="checkbox"
+                  checked={showScoreMomentumMateOverlay}
+                  onChange={(event) => setShowScoreMomentumMateOverlay(event.target.checked)}
+                />
+                <span className="chart-switch" aria-hidden="true">
+                  <span className="chart-switch-thumb" />
+                </span>
+                <span className="chart-checkbox-label">Mates</span>
+              </label>
+            )}</div>
             {statsView === "single" ? (!focusedReplay || !singleMatchPlayers.length ? (
               <p className="failure-empty">Select a replay row to compare every player in one match.</p>
             ) : (
@@ -2218,9 +2271,9 @@ export default function App() {
                     <XAxis dataKey="bucket" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={trendTickFormatter} />
                     <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
                     <Tooltip />
-                    <Line type="monotone" dataKey="avgScore" stroke="#f59e0b" strokeWidth={3} dot={false} connectNulls />
-                    <Line type="monotone" dataKey="avgScoreRegression" name="Score regression" stroke="#fde68a" strokeWidth={2} strokeDasharray="7 5" dot={false} connectNulls />
-                    {showMateComparison && <Line type="monotone" dataKey="mateAvgScore" name="Mate avg score" stroke="#38bdf8" strokeWidth={2.5} dot={false} connectNulls />}
+                    <Line type="monotone" dataKey="avgScore" stroke={playerCurveColor} strokeWidth={3} dot={false} connectNulls />
+                    <Line type="monotone" dataKey="avgScoreRegression" name="Score regression" stroke={playerCurveSoftColor} strokeWidth={2} strokeDasharray="7 5" dot={false} connectNulls />
+                    {showScoreMomentumMateOverlay && <Line type="monotone" dataKey="mateAvgScore" name="Mate avg score" stroke={mateOverlayColor} strokeWidth={2.5} dot={false} connectNulls />}
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -2229,7 +2282,19 @@ export default function App() {
           )}
           {shouldShowAnalytics("overview") && (
           <article id="score-diff" className="panel chart-panel overview-chart-panel">
-            <div className="panel-title"><RadarIcon size={18} /> {statsView === "single" ? "Single Match Win / Loss by Player" : `${tabMeta[timeTab].label} Score vs Lobby Avg`} <span className="metric-scope-pill player" title={statsView === "single" ? "Single match view: compares every player in the selected replay." : "Player metric: compares tracked-player score against the average score of the full lobby in each replay."}>{statsView === "single" ? "All players" : "Player"}</span> {statsView !== "single" && showMateComparison && <span className="metric-scope-pill team" title="Mate comparison overlay: teammate average score versus lobby average.">Mates overlay</span>} <Tip text={statsView === "single" ? "Selected replay only. Shows which players were on the winning side." : "How far above or below the average lobby score the tracked player is in each period. Turn on `Show mates overlay` to compare against teammate average versus lobby average."} /></div>
+            <div className="panel-title"><RadarIcon size={18} /> {statsView === "single" ? "Single Match Win / Loss by Player" : `${tabMeta[timeTab].label} Score vs Lobby Avg`} <span className="metric-scope-pill player" title={statsView === "single" ? "Single match view: compares every player in the selected replay." : "Player metric: compares tracked-player score against the average score of the full lobby in each replay."}>{statsView === "single" ? "All players" : "Player"}</span> {statsView !== "single" && showScoreGapMateOverlay && <span className="metric-scope-pill team" title="Mate comparison overlay: teammate average score versus lobby average.">Mates overlay</span>} <Tip text={statsView === "single" ? "Selected replay only. Shows which players were on the winning side." : "How far above or below the average lobby score the tracked player is in each period. Turn on `Show mates overlay` to compare against teammate average versus lobby average."} />{statsView !== "single" && hasTrackedPlayerMatch && (
+              <label className="chart-checkbox-row chart-checkbox-inline" title="Add teammate score-vs-lobby average to this chart only.">
+                <input
+                  type="checkbox"
+                  checked={showScoreGapMateOverlay}
+                  onChange={(event) => setShowScoreGapMateOverlay(event.target.checked)}
+                />
+                <span className="chart-switch" aria-hidden="true">
+                  <span className="chart-switch-thumb" />
+                </span>
+                <span className="chart-checkbox-label">Mates</span>
+              </label>
+            )}</div>
             {statsView === "single" ? (!focusedReplay || !singleMatchPlayers.length ? (
               <p className="failure-empty">Select a replay row to compare every player in one match.</p>
             ) : (
@@ -2256,9 +2321,9 @@ export default function App() {
                     <XAxis dataKey="bucket" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={trendTickFormatter} />
                     <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
                     <Tooltip />
-                    <Line type="monotone" dataKey="scoreGap" stroke="#38bdf8" strokeWidth={3} dot={false} />
-                    <Line type="monotone" dataKey="scoreGapRegression" name="Score-gap regression" stroke="#93c5fd" strokeWidth={2} strokeDasharray="7 5" dot={false} connectNulls />
-                    {showMateComparison && <Line type="monotone" dataKey="mateScoreGap" name="Mate score vs lobby avg" stroke="#f97316" strokeWidth={2.5} dot={false} connectNulls />}
+                    <Line type="monotone" dataKey="scoreGap" stroke={playerCurveColor} strokeWidth={3} dot={false} />
+                    <Line type="monotone" dataKey="scoreGapRegression" name="Score-gap regression" stroke={playerCurveSoftColor} strokeWidth={2} strokeDasharray="7 5" dot={false} connectNulls />
+                    {showScoreGapMateOverlay && <Line type="monotone" dataKey="mateScoreGap" name="Mate score vs lobby avg" stroke={mateOverlayColor} strokeWidth={2.5} dot={false} connectNulls />}
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -2267,7 +2332,19 @@ export default function App() {
           )}
           {shouldShowAnalytics("overview") && (
           <article id="contribution-stack" className="panel chart-panel overview-chart-panel">
-            <div className="panel-title"><Activity size={18} /> {statsView === "single" ? "Single Match Goals / Assists / Saves" : `${tabMeta[timeTab].label} Goals / Assists / Saves`} <span className="metric-scope-pill player" title={statsView === "single" ? "Single match view: compares every player in the selected replay." : "Player metric: tracked-player goals, assists, and saves over the selected time view."}>{statsView === "single" ? "All players" : "Player"}</span> {statsView !== "single" && showMateComparison && <span className="metric-scope-pill team" title="Mate comparison overlay: average teammate goals + assists + saves in each bucket.">Mates overlay</span>} <Tip text={statsView === "single" ? "Selected replay only. Stacked bars compare each player's contributions in the chosen match." : "Stacked contribution chart for the tracked player. Turn on `Show mates overlay` to add average teammate contributions."} /></div>
+            <div className="panel-title"><Activity size={18} /> {statsView === "single" ? "Single Match Goals / Assists / Saves" : `${tabMeta[timeTab].label} Goals / Assists / Saves`} <span className="metric-scope-pill player" title={statsView === "single" ? "Single match view: compares every player in the selected replay." : "Player metric: tracked-player goals, assists, saves, and goals per shot over the selected time view."}>{statsView === "single" ? "All players" : "Player"}</span> <Tip text={statsView === "single" ? "Selected replay only. Stacked bars compare each player's goals, assists, and saves in the chosen match." : "Stacked contribution chart for the tracked player, with Goals / Shot overlaid as a green line. Enable regression to draw dashed trend lines."} />{statsView !== "single" && (
+              <label className="chart-checkbox-row chart-checkbox-inline" title="Draw dashed regression lines for goals, assists, and saves on top of the grouped bars.">
+                <input
+                  type="checkbox"
+                  checked={showContributionRegression}
+                  onChange={(event) => setShowContributionRegression(event.target.checked)}
+                />
+                <span className="chart-switch" aria-hidden="true">
+                  <span className="chart-switch-thumb" />
+                </span>
+                <span className="chart-checkbox-label">Regression</span>
+              </label>
+            )}</div>
             {statsView === "single" ? (!focusedReplay || !singleMatchPlayers.length ? (
               <p className="failure-empty">Select a replay row to compare every player in one match.</p>
             ) : (
@@ -2277,10 +2354,13 @@ export default function App() {
                     <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
                     <XAxis dataKey="name" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={singleMatchTickFormatter} interval={0} angle={-18} textAnchor="end" height={56} />
                     <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
-                    <Tooltip formatter={(value) => num(value, 2)} />
-                    <Bar dataKey="goals" stackId="contrib" fill="#22c55e" radius={[6, 6, 0, 0]} />
-                    <Bar dataKey="assists" stackId="contrib" fill="#38bdf8" radius={[6, 6, 0, 0]} />
-                    <Bar dataKey="saves" stackId="contrib" fill="#f59e0b" radius={[6, 6, 0, 0]} />
+                    <YAxis yAxisId="ratio" orientation="right" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={(value) => pct(Number(value) || 0)} domain={[0, "auto"]} />
+                    <Tooltip formatter={contributionTooltipFormatter} />
+                    <Legend />
+                    <Bar dataKey="goals" name="Goals" stackId="contrib" fill="#22c55e" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="assists" name="Assists" stackId="contrib" fill="#38bdf8" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="saves" name="Saves" stackId="contrib" fill="#f59e0b" radius={[6, 6, 0, 0]} />
+                    <Line yAxisId="ratio" type="monotone" dataKey="shot_accuracy" name="Goals / Shot" stroke="#22c55e" strokeWidth={2} dot={false} activeDot={{ r: 4 }} connectNulls />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -2289,16 +2369,22 @@ export default function App() {
             ) : (
               <div className={`chart ${timeTab === "hour" ? "timeline-chart" : ""}`}>
                 <ResponsiveContainer width="100%" height={overviewChartHeight}>
-                  <BarChart data={overviewContributionTrendData} syncId={overviewChartSyncId} syncMethod="index">
+                  <ComposedChart data={overviewContributionTrendDataWithRegression} syncId={overviewChartSyncId} syncMethod="index" margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
                     <XAxis dataKey="bucket" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={trendTickFormatter} />
                     <YAxis tick={{ fill: chartTick, fontSize: 11 }} />
-                    <Tooltip formatter={(value) => num(value, 2)} />
-                    <Bar dataKey="goals" stackId="contrib" fill="#22c55e" radius={[6, 6, 0, 0]} />
-                    <Bar dataKey="assists" stackId="contrib" fill="#38bdf8" radius={[6, 6, 0, 0]} />
-                    <Bar dataKey="saves" stackId="contrib" fill="#f59e0b" radius={[6, 6, 0, 0]} />
-                    {showMateComparison && <Line type="monotone" dataKey="mateTotal" name="Mate total contributions" stroke="#f97316" strokeWidth={2.5} dot={false} connectNulls />}
-                  </BarChart>
+                    <YAxis yAxisId="ratio" orientation="right" tick={{ fill: chartTick, fontSize: 11 }} tickFormatter={(value) => pct(Number(value) || 0)} domain={[0, "auto"]} />
+                    <Tooltip formatter={contributionTooltipFormatter} />
+                    <Legend wrapperStyle={{ paddingTop: 4, fontSize: 11 }} iconSize={10} />
+                    <Bar dataKey="goals" name="Goals" stackId="contrib" fill="#22c55e" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="assists" name="Assists" stackId="contrib" fill="#38bdf8" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="saves" name="Saves" stackId="contrib" fill="#f59e0b" radius={[6, 6, 0, 0]} />
+                    <Line yAxisId="ratio" type="monotone" dataKey="shot_accuracy" name="Goals / Shot" stroke="#22c55e" strokeWidth={2} dot={false} activeDot={{ r: 4 }} connectNulls />
+                    {showContributionRegression && <Line type="monotone" dataKey="goalsRegression" name="Goals regression" stroke="#22c55e" strokeWidth={2} strokeDasharray="7 5" dot={false} connectNulls />}
+                    {showContributionRegression && <Line type="monotone" dataKey="assistsRegression" name="Assists regression" stroke="#38bdf8" strokeWidth={2} strokeDasharray="7 5" dot={false} connectNulls />}
+                    {showContributionRegression && <Line type="monotone" dataKey="savesRegression" name="Saves regression" stroke="#f59e0b" strokeWidth={2} strokeDasharray="7 5" dot={false} connectNulls />}
+                    {showContributionRegression && <Line yAxisId="ratio" type="monotone" dataKey="shotAccuracyRegression" name="Goals / Shot regression" stroke="#22c55e" strokeWidth={2} strokeDasharray="4 4" dot={false} connectNulls />}
+                  </ComposedChart>
                 </ResponsiveContainer>
               </div>
             )}
@@ -2327,9 +2413,9 @@ export default function App() {
                       }}
                     />
                     <Legend verticalAlign="bottom" height={30} />
-                    <RadarSeries name="Player" dataKey="player" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.18} strokeWidth={2.5} />
+                    <RadarSeries name="Player" dataKey="player" stroke={playerCurveColor} fill={playerCurveColor} fillOpacity={0.18} strokeWidth={2.5} />
                     <RadarSeries name="Mates" dataKey="mates" stroke="#38bdf8" fill="#38bdf8" fillOpacity={0.14} strokeWidth={2.5} />
-                    <RadarSeries name="Enemies" dataKey="enemies" stroke="#f97316" fill="#f97316" fillOpacity={0.1} strokeWidth={2.5} />
+                    <RadarSeries name="Enemies" dataKey="enemies" stroke={enemyCurveColor} fill={enemyCurveColor} fillOpacity={0.1} strokeWidth={2.5} />
                   </RadarChart>
                 </ResponsiveContainer>
               </div>
@@ -2337,31 +2423,8 @@ export default function App() {
           </article>
           )}
           {shouldShowAnalytics("overview") && (
-          <article id="stats-categories" className="panel chart-panel tabs-panel">
-            <div className="panel-title"><Filter size={18} /> Feature Categories <span className="metric-scope-pill player" title="Player metric: values are computed from the tracked player's fields per replay.">Player</span> <Tip text="Category rollup of offense, defense, teamplay, impact, and context metrics for the tracked player." /></div>
-            {!hasTrackedPlayerMatch ? (
-              <p className="failure-empty">{playerMetricPrompt}</p>
-            ) : (
-              <div className="impact-chips">
-                {(scopedCategories || []).map((cat) => (
-                  <div key={cat.id} className="impact-chip">
-                    <div>{cat.label} <Tip text={CATEGORY_DOCS[cat.label] || `Category: ${cat.label}.`} /></div>
-                    <strong>{cat.metrics?.[0]?.value || "-"}</strong>
-                    <span>
-                      {(cat.metrics || [])
-                        .slice(1)
-                        .map((m) => `${m.label}: ${m.value}`)
-                        .join(" | ")}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </article>
-          )}
-          {shouldShowAnalytics("overview") && (
           <article id="impactful-stats" className="panel chart-panel tabs-panel">
-            <div className="panel-title"><Gauge size={18} /> Impactful Stats (Concise) <span className="metric-scope-pill player" title="Player metric: compares tracked-player averages in wins versus losses.">Player</span> <Tip text="Top player metrics with the largest average difference between wins and losses." /></div>
+            <div className="panel-title"><Gauge size={18} /> Impactful Stats (Concise)</div>
             {!hasTrackedPlayerMatch ? (
               <p className="failure-empty">{playerMetricPrompt}</p>
             ) : (
@@ -2469,26 +2532,25 @@ export default function App() {
           )}
           {shouldShowAnalytics("distribution") && (
           <article className="panel chart-panel wide-table-panel">
-            <div className="panel-title"><Trophy size={18} /> Win Rate by Map <Tip text="Maps ranked by play count, but the primary bar is your win rate on each map. Games played stay as the secondary overlay for context." /></div>
-            <div className="chart">
-              <ResponsiveContainer width="100%" height={400}>
-                <BarChart data={mapWinRateRows} margin={{ top: 24, right: 16, left: 8, bottom: 10 }}>
+            <div className="panel-title"><Trophy size={18} /> Win Rate by Map <Tip text="Horizontal map ranking. Each row shows your win rate bar plus the number of games played on that map." /></div>
+            <div className="chart map-winrate-chart">
+              <ResponsiveContainer width="100%" height={Math.max(320, mapWinRateRows.length * 36 + 56)}>
+                <BarChart data={mapWinRateRows} layout="vertical" margin={{ top: 12, right: 76, left: 8, bottom: 8 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
-                  <XAxis
+                  <XAxis type="number" domain={[0, 100]} tick={{ fill: chartTick, fontSize: 11 }} />
+                  <YAxis
+                    type="category"
                     dataKey="map"
                     tick={{ fill: chartTick, fontSize: 11 }}
-                    tickFormatter={(value) => formatMapAxisLabel(value, 18)}
-                    interval={0}
-                    angle={-18}
-                    textAnchor="end"
-                    height={92}
+                    width={160}
+                    tickFormatter={(value) => {
+                      const row = mapWinRateRows.find((entry) => entry.map === value);
+                      return formatMapCategoryLabel(value, row?.games ?? 0, 18);
+                    }}
                   />
-                  <YAxis yAxisId="left" domain={[0, 100]} tick={{ fill: chartTick, fontSize: 11 }} />
-                  <YAxis yAxisId="right" orientation="right" tick={{ fill: chartTick, fontSize: 11 }} />
                   <Tooltip
                     formatter={(value, name) => {
                       if (name === "Win %") return `${num(value, 2)}%`;
-                      if (name === "Games") return `${value} games`;
                       return value;
                     }}
                     labelFormatter={(label) => {
@@ -2496,17 +2558,14 @@ export default function App() {
                       return row ? `${row.map} | ${row.games} games` : label;
                     }}
                   />
-                  <Bar yAxisId="left" dataKey={MAP_WINRATE_PRIMARY_KEY} name="Win %" fill="#60a5fa" radius={[6, 6, 0, 0]} />
-                  <Line
-                    yAxisId="right"
-                    type="monotone"
-                    dataKey={MAP_WINRATE_SECONDARY_KEY}
-                    name="Games"
-                    stroke="#f97316"
-                    strokeWidth={2.5}
-                    dot={{ r: 2 }}
-                    label={{ position: "top", fill: chartTick, fontSize: 11 }}
-                  />
+                  <Bar dataKey={MAP_WINRATE_PRIMARY_KEY} name="Win %" fill="#60a5fa" radius={[0, 6, 6, 0]}>
+                    <LabelList
+                      dataKey="winRateLabel"
+                      position="right"
+                      fill={chartTick}
+                      fontSize={11}
+                    />
+                  </Bar>
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -2633,6 +2692,46 @@ export default function App() {
           )}
         </section>
         {shouldShowAnalytics("overview") && (
+        <section id="correlation-table" className="panel wide-table-panel">
+          <div className="panel-title"><Filter size={18} /> {tabMeta[timeTab].label} Correlations <span className="metric-scope-pill player" title="Player metric: computed from the current tracked-player bucket series.">Player</span> <Tip text={`Pearson correlation between ${tabMeta[timeTab].short} bucket order and each overview metric. Positive means the metric trends upward later in the sequence; negative means it trends downward.`} /></div>
+          {!hasTrackedPlayerMatch ? (
+            <p className="failure-empty">{playerMetricPrompt}</p>
+          ) : overviewCorrelationRows.length < 3 ? (
+            <p className="failure-empty">Need at least 3 populated {tabMeta[timeTab].short.toLowerCase()} buckets to compute correlations.</p>
+          ) : (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Metric</th>
+                    <th>Correlation</th>
+                    <th>Strength</th>
+                    <th>Buckets</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {overviewCorrelationRows.map((row) => {
+                    const strength = row.absCorrelation >= 0.7
+                      ? "Strong"
+                      : row.absCorrelation >= 0.4
+                        ? "Moderate"
+                        : "Weak";
+                    return (
+                      <tr key={row.key}>
+                        <td>{row.label}</td>
+                        <td>{signed(row.correlation, 3)}</td>
+                        <td>{strength}</td>
+                        <td>{row.sampleSize}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+        )}
+        {shouldShowAnalytics("overview") && (
         <section className="panel chart-panel overview-summary-panel">
           <div className="panel-title"><Gauge size={18} /> {tabMeta[timeTab].label} Aggregate Insights <span className="metric-scope-pill player" title="Player metric: aggregate insights summarize the tracked-player time series.">Player</span> <Tip text="Weighted summary cards for the tracked-player timeline: best/worst/busiest periods and overall weighted performance." /></div>
           <div className="impact-chips">
@@ -2682,6 +2781,47 @@ export default function App() {
               </article>
             ))}
           </div>
+          {Array.isArray(viewDerived.daysPlayedHeatmap?.cells) && viewDerived.daysPlayedHeatmap.cells.length > 0 && (
+            <div className="misc-heatmap" aria-label="Days played heatmap">
+              <div className="wtf-label">Days Played Heatmap</div>
+              <div className="misc-heatmap-meta">
+                <span>{viewDerived.daysPlayedHeatmap.playedDays} active day(s)</span>
+                <span>Recent 42-day window</span>
+              </div>
+              <div className="misc-heatmap-grid">
+                {viewDerived.daysPlayedHeatmap.cells.map((cell) => {
+                  const maxCount = Number(viewDerived.daysPlayedHeatmap.maxCount || 0);
+                  const intensity = maxCount > 0 ? cell.count / maxCount : 0;
+                  const backgroundColor =
+                    cell.count > 0
+                      ? `rgba(34, 197, 94, ${0.18 + intensity * 0.72})`
+                      : (theme === "light" ? "rgba(148, 163, 184, 0.12)" : "rgba(148, 163, 184, 0.08)");
+                  const ranked = Number(cell.matchTypes?.ranked || 0);
+                  const tournament = Number(cell.matchTypes?.tournament || 0);
+                  const casual = Number(cell.matchTypes?.casual || 0);
+                  const other = Number(cell.matchTypes?.other || 0);
+                  const breakdown = [
+                    ranked > 0 ? `${ranked} ranked` : null,
+                    tournament > 0 ? `${tournament} tournament` : null,
+                    casual > 0 ? `${casual} casual` : null,
+                    other > 0 ? `${other} other` : null,
+                  ].filter(Boolean);
+                  const detail = `${cell.longLabel}\n${cell.count} replay${cell.count === 1 ? "" : "s"}${breakdown.length ? `\n${breakdown.join(", ")}` : "\nNo activity"}`;
+                  return (
+                    <div
+                      key={cell.key}
+                      className={`misc-heatmap-cell ${cell.count > 0 ? "active" : "idle"}`}
+                      title={detail}
+                      data-tooltip={detail}
+                      style={{ backgroundColor }}
+                    >
+                      <span>{cell.count > 0 ? cell.count : ""}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </section>
         )}
       </main>

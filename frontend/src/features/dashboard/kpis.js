@@ -23,32 +23,18 @@ export function buildTopKpiCards({
   trackedPlayerOverview,
   hasTrackedPlayerMatch,
   playerMetricPrompt,
-  playerIdPrompt,
 }) {
   return [
     {
       label: "Replays",
-      teamValue: String(totalMatches),
-      playerValue: hasTrackedPlayerMatch ? String(trackedPlayerOverview.matches) : "",
-      playerEmpty: playerMetricPrompt || playerIdPrompt,
-      forcePlayerOnly: false,
+      primaryValue: String(totalMatches),
     },
     {
       label: "Win Rate",
-      teamValue: "",
-      playerValue: trackedPlayerOverview.winRate === null ? "" : `${(trackedPlayerOverview.winRate * 100).toFixed(2)}%`,
-      playerEmpty: playerMetricPrompt || playerIdPrompt,
-      forcePlayerOnly: true,
+      primaryValue:
+        trackedPlayerOverview.winRate === null
+          ? (playerMetricPrompt || "-")
+          : `${(trackedPlayerOverview.winRate * 100).toFixed(2)}%`,
     },
-  ].map((card) => {
-    const hasPlayerValue = Boolean(card.playerValue);
-    const showDual = !card.forcePlayerOnly && hasPlayerValue && card.playerValue !== card.teamValue;
-    return {
-      ...card,
-      showDual,
-      primaryValue: card.forcePlayerOnly
-        ? (card.playerValue || card.playerEmpty || "-")
-        : (showDual ? card.teamValue : (card.playerValue || card.teamValue || card.playerEmpty || "-")),
-    };
-  });
+  ];
 }

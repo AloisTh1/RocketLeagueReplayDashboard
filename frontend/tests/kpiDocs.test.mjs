@@ -11,16 +11,15 @@ function getWebsiteKpiLine(name) {
   return match ? match[1].trim() : "";
 }
 
-test("website KPI copy keeps display rule separate from per-metric details", () => {
+test("website KPI copy keeps replay and win-rate descriptions aligned with the fixed cards", () => {
   const replays = getWebsiteKpiLine("Replays");
   const winRate = getWebsiteKpiLine("Win Rate");
-  const displayRule = getWebsiteKpiLine("Display rule");
 
-  assert.match(replays, /currently visible after your active filters/i);
-  assert.doesNotMatch(replays, /Cards split into `Team \/ Player`/i);
+  assert.match(replays, /number of replay rows in the current scope after filters/i);
+  assert.doesNotMatch(replays, /tracked-player count as a second value/i);
+  assert.equal(getWebsiteKpiLine("Display rule"), "");
 
   assert.match(winRate, /tracked player's win rate/i);
+  assert.match(winRate, /actual side in each replay/i);
   assert.doesNotMatch(winRate, /Cards split into `Team \/ Player`/i);
-
-  assert.match(displayRule, /only when those two values are different/i);
 });

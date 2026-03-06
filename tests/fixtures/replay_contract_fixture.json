@@ -20,8 +20,8 @@
       "Team1Score": 5,
       "PlayerStats": [
         {
-          "Name": "TrackedPlayer",
-          "OnlineID": "76561190000000001",
+          "Name": "Tracked Player",
+          "OnlineID": "tracked-player-000001",
           "Team": 1,
           "Score": 800,
           "Goals": 2,
@@ -43,7 +43,7 @@
           "PlayerID": {
             "name": "UniqueNetId",
             "fields": {
-              "Uid": "76561190000000001",
+              "Uid": "tracked-player-000001",
               "EpicAccountId": "",
               "Platform": {
                 "kind": "OnlinePlatform",
@@ -53,7 +53,7 @@
           }
         },
         {
-          "Name": "MatePlayer",
+          "Name": "Mate Player",
           "OnlineID": "0",
           "Team": 1,
           "Score": 500,
@@ -77,7 +77,7 @@
             "name": "UniqueNetId",
             "fields": {
               "Uid": "0",
-              "EpicAccountId": "epic-mate-123",
+              "EpicAccountId": "mate-player-000002",
               "Platform": {
                 "kind": "OnlinePlatform",
                 "value": "OnlinePlatform_Epic"
@@ -86,7 +86,7 @@
           }
         },
         {
-          "Name": "OppXbox",
+          "Name": "Opponent Alpha",
           "OnlineID": "0",
           "Team": 0,
           "Score": 400,
@@ -110,7 +110,7 @@
             "name": "UniqueNetId",
             "fields": {
               "Uid": "0",
-              "EpicAccountId": "xbox-opp-123",
+              "EpicAccountId": "opponent-alpha-000003",
               "Platform": {
                 "kind": "OnlinePlatform",
                 "value": "OnlinePlatform_Xbox"
@@ -119,8 +119,8 @@
           }
         },
         {
-          "Name": "OppPS",
-          "OnlineID": "129999999999999999",
+          "Name": "Opponent Beta",
+          "OnlineID": "opponent-beta-000004",
           "Team": 0,
           "Score": 300,
           "Goals": 2,
@@ -142,7 +142,7 @@
           "PlayerID": {
             "name": "UniqueNetId",
             "fields": {
-              "Uid": "129999999999999999",
+              "Uid": "opponent-beta-000004",
               "EpicAccountId": "",
               "Platform": {
                 "kind": "OnlinePlatform",
@@ -178,8 +178,8 @@
     "raw_date_text": "2025-01-15 21-45-12",
     "players": [
       {
-        "name": "TrackedPlayer",
-        "player_id": "76561190000000001",
+        "name": "Tracked Player",
+        "player_id": "tracked-player-000001",
         "team": 1,
         "score": 800,
         "goals": 2,
@@ -193,15 +193,15 @@
         "big_boosts": 20,
         "small_boosts": 40,
         "mmr": 1200.0,
-        "online_id": "76561190000000001",
+        "online_id": "tracked-player-000001",
         "platform": "OnlinePlatform_Steam",
         "platform_kind": "OnlinePlatform",
         "is_bot": false,
         "won": null
       },
       {
-        "name": "MatePlayer",
-        "player_id": "epic-mate-123",
+        "name": "Mate Player",
+        "player_id": "mate-player-000002",
         "team": 1,
         "score": 500,
         "goals": 3,
@@ -222,8 +222,8 @@
         "won": null
       },
       {
-        "name": "OppXbox",
-        "player_id": "xbox-opp-123",
+        "name": "Opponent Alpha",
+        "player_id": "opponent-alpha-000003",
         "team": 0,
         "score": 400,
         "goals": 1,
@@ -244,8 +244,8 @@
         "won": null
       },
       {
-        "name": "OppPS",
-        "player_id": "129999999999999999",
+        "name": "Opponent Beta",
+        "player_id": "opponent-beta-000004",
         "team": 0,
         "score": 300,
         "goals": 2,
@@ -259,7 +259,7 @@
         "big_boosts": 12,
         "small_boosts": 28,
         "mmr": 1160.0,
-        "online_id": "129999999999999999",
+        "online_id": "opponent-beta-000004",
         "platform": "OnlinePlatform_PS4",
         "platform_kind": "OnlinePlatform",
         "is_bot": false,
@@ -280,8 +280,8 @@
   "expected_row": {
     "id": "FIXTURE123",
     "date": "2025-01-15T21:45:12+00:00",
-    "player_name": "TrackedPlayer",
-    "player_id": "76561190000000001",
+    "player_name": "Tracked Player",
+    "player_id": "tracked-player-000001",
     "match_type": "Ranked",
     "game_mode": "2v2",
     "ranked": true,
@@ -302,21 +302,22 @@
     "team_size": 2,
     "duration_seconds": 312,
     "teammate_names": [
-      "MatePlayer"
+      "Mate Player"
     ],
     "team_player_names": [
-      "TrackedPlayer",
-      "MatePlayer"
+      "Tracked Player",
+      "Mate Player"
     ],
     "opponent_player_names": [
-      "OppXbox",
-      "OppPS"
+      "Opponent Alpha",
+      "Opponent Beta"
     ],
     "team_players": [
       {
-        "name": "TrackedPlayer",
-        "player_id": "76561190000000001",
-        "online_id": "76561190000000001",
+        "name": "Tracked Player",
+        "player_id": "tracked-player-000001",
+        "online_id": "tracked-player-000001",
+        "team": 1,
         "score": 800,
         "goals": 2,
         "assists": 1,
@@ -335,9 +336,10 @@
         "is_bot": false
       },
       {
-        "name": "MatePlayer",
-        "player_id": "epic-mate-123",
+        "name": "Mate Player",
+        "player_id": "mate-player-000002",
         "online_id": "0",
+        "team": 1,
         "score": 500,
         "goals": 3,
         "assists": 2,
@@ -358,9 +360,10 @@
     ],
     "opponent_players": [
       {
-        "name": "OppXbox",
-        "player_id": "xbox-opp-123",
+        "name": "Opponent Alpha",
+        "player_id": "opponent-alpha-000003",
         "online_id": "0",
+        "team": 0,
         "score": 400,
         "goals": 1,
         "assists": 0,
@@ -379,9 +382,10 @@
         "is_bot": false
       },
       {
-        "name": "OppPS",
-        "player_id": "129999999999999999",
-        "online_id": "129999999999999999",
+        "name": "Opponent Beta",
+        "player_id": "opponent-beta-000004",
+        "online_id": "opponent-beta-000004",
+        "team": 0,
         "score": 300,
         "goals": 2,
         "assists": 1,
@@ -400,8 +404,110 @@
         "is_bot": false
       }
     ],
+    "blue_player_names": [
+      "Opponent Alpha",
+      "Opponent Beta"
+    ],
+    "orange_player_names": [
+      "Tracked Player",
+      "Mate Player"
+    ],
+    "blue_players": [
+      {
+        "name": "Opponent Alpha",
+        "player_id": "opponent-alpha-000003",
+        "online_id": "0",
+        "team": 0,
+        "score": 400,
+        "goals": 1,
+        "assists": 0,
+        "saves": 2,
+        "shots": 5,
+        "touches": 18,
+        "clears": 4,
+        "centers": 1,
+        "demos": 0,
+        "big_boosts": 18,
+        "small_boosts": 30,
+        "platform": "OnlinePlatform_Xbox",
+        "platform_kind": "OnlinePlatform",
+        "platform_label": "Xbox",
+        "platform_code": "X",
+        "is_bot": false
+      },
+      {
+        "name": "Opponent Beta",
+        "player_id": "opponent-beta-000004",
+        "online_id": "opponent-beta-000004",
+        "team": 0,
+        "score": 300,
+        "goals": 2,
+        "assists": 1,
+        "saves": 1,
+        "shots": 3,
+        "touches": 16,
+        "clears": 2,
+        "centers": 3,
+        "demos": 1,
+        "big_boosts": 12,
+        "small_boosts": 28,
+        "platform": "OnlinePlatform_PS4",
+        "platform_kind": "OnlinePlatform",
+        "platform_label": "PlayStation",
+        "platform_code": "P",
+        "is_bot": false
+      }
+    ],
+    "orange_players": [
+      {
+        "name": "Tracked Player",
+        "player_id": "tracked-player-000001",
+        "online_id": "tracked-player-000001",
+        "team": 1,
+        "score": 800,
+        "goals": 2,
+        "assists": 1,
+        "saves": 3,
+        "shots": 6,
+        "touches": 30,
+        "clears": 5,
+        "centers": 4,
+        "demos": 2,
+        "big_boosts": 20,
+        "small_boosts": 40,
+        "platform": "OnlinePlatform_Steam",
+        "platform_kind": "OnlinePlatform",
+        "platform_label": "Steam",
+        "platform_code": "S",
+        "is_bot": false
+      },
+      {
+        "name": "Mate Player",
+        "player_id": "mate-player-000002",
+        "online_id": "0",
+        "team": 1,
+        "score": 500,
+        "goals": 3,
+        "assists": 2,
+        "saves": 1,
+        "shots": 4,
+        "touches": 20,
+        "clears": 3,
+        "centers": 2,
+        "demos": 1,
+        "big_boosts": 15,
+        "small_boosts": 35,
+        "platform": "OnlinePlatform_Epic",
+        "platform_kind": "OnlinePlatform",
+        "platform_label": "Epic",
+        "platform_code": "E",
+        "is_bot": false
+      }
+    ],
+    "blue_score": 3,
+    "orange_score": 5,
     "teammate_avg_score": 650.0,
-    "online_id": "76561190000000001",
+    "online_id": "tracked-player-000001",
     "platform": "OnlinePlatform_Steam",
     "platform_kind": "OnlinePlatform",
     "is_bot": false,
@@ -455,24 +561,14 @@
     "score_diff_vs_others": 600.0,
     "score_diff_vs_mate": 650.0,
     "score_diff_vs_opponents": 600.0,
-    "goals_diff_vs_others": 2.0,
     "goals_diff_vs_opponents": 2.0,
-    "assists_diff_vs_others": 2.0,
     "assists_diff_vs_opponents": 2.0,
-    "saves_diff_vs_others": 1.0,
     "saves_diff_vs_opponents": 1.0,
-    "shots_diff_vs_others": 2.0,
     "shots_diff_vs_opponents": 2.0,
-    "touches_diff_vs_others": 16.0,
     "touches_diff_vs_opponents": 16.0,
-    "clears_diff_vs_others": 2.0,
     "clears_diff_vs_opponents": 2.0,
-    "centers_diff_vs_others": 2.0,
     "centers_diff_vs_opponents": 2.0,
-    "demos_diff_vs_others": 2.0,
-    "demos_diff_vs_opponents": 2.0,
-    "big_boosts_diff_vs_others": 5.0,
-    "small_boosts_diff_vs_others": 17.0
+    "demos_diff_vs_opponents": 2.0
   }
 }
 
