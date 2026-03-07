@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v2.1.0 (2026-03-07)
+
+### Features
+
+- Refine dashboard metrics and parser behavior
+  ([`6795e17`](https://github.com/AloisTh1/RocketLeagueReplayDashboard/commit/6795e17cd34f2bf6ba3b46290556522000a25c89))
+
+
 ## v2.0.6 (2026-03-06)
 
 ### Documentation
